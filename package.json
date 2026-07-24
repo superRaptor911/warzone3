@@ -1,0 +1,23 @@
+{
+  "name": "warzone3",
+  "version": "0.1.0",
+  "description": "Top-down 2D multiplayer shooter: zombie survival + 5v5 TDM with bots",
+  "type": "module",
+  "main": "server/index.ts",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.ts",
+    "check": "tsc",
+    "test": "tsc && node test/matchflow.ts && node test/smoke.ts",
+    "vendor": "mkdir -p client/vendor && cp node_modules/pixi.js/dist/pixi.min.mjs node_modules/pixi-filters/dist/pixi-filters.mjs client/vendor/"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "pixi-filters": "^6.1.5",
+    "pixi.js": "^8.19.0",
+    "typescript": "^7.0.2"
+  }
+}

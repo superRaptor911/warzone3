@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARZONE·3</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23e8483f'/><circle cx='8' cy='8' r='3' fill='%230a0c10'/></svg>">
+<link rel="stylesheet" href="/style.css">
+<script type="importmap">
+{ "imports": { "pixi.js": "/vendor/pixi.min.mjs", "pixi-filters": "/vendor/pixi-filters.mjs" } }
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="menu" class="overlay">
+  <div class="menu-card">
+    <h1>WARZONE<span>·3</span></h1>
+    <p class="tagline">top-down tactical shooter</p>
+    <input id="name-input" maxlength="16" placeholder="callsign" autocomplete="off">
+    <div class="mode-row">
+      <button class="mode-card" data-mode="zombie">
+        <div class="mode-title">OUTBREAK</div>
+        <div class="mode-desc">co-op zombie survival<br>endless waves &middot; buy weapons</div>
+      </button>
+      <button class="mode-card" data-mode="tdm">
+        <div class="mode-title">5v5 SKIRMISH</div>
+        <div class="mode-desc">team deathmatch<br>first to 40 kills</div>
+      </button>
+    </div>
+    <div id="cp-row" class="hidden">
+      <span id="cp-label"></span>
+      <button id="cp-clear">start fresh</button>
+    </div>
+    <div id="loadout-row">
+      <span class="loadout-label">loadout</span>
+      <div id="loadout-opts">
+        <button data-w="rifle" class="sel">AR-7</button>
+        <button data-w="smg">SMG</button>
+        <button data-w="shotgun">M870</button>
+        <button data-w="sniper">LR-50</button>
+      </div>
+    </div>
+    <p class="help">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Tab scores</p>
+    <p id="conn-status"></p>
+  </div>
+</div>
+
+<div id="hud" class="hidden">
+  <div id="topbar"></div>
+  <div id="banner"></div>
+  <div id="killfeed"></div>
+
+  <div id="bottom-left">
+    <div id="healthwrap"><div id="healthbar"></div><span id="healthnum"></span></div>
+    <div id="stamwrap"><div id="stambar"></div></div>
+    <div id="winded" class="hidden">WINDED</div>
+    <div id="points" class="hidden"></div>
+    <div id="shophint" class="hidden">B — ARMORY</div>
+  </div>
+
+  <div id="bottom-right">
+    <div id="weapon-slots"></div>
+    <div id="reloadhint" class="hidden">R — RELOAD</div>
+    <div id="ammo"><span id="mag"></span><span id="reserve"></span></div>
+    <div id="reloadwrap" class="hidden"><div id="reloadbar"></div></div>
+  </div>
+
+  <div id="botbar"></div>
+
+  <div id="buymenu" class="hidden">
+    <h3>ARMORY <span class="bm-pts"></span></h3>
+    <div id="buy-items"></div>
+    <p class="help">click or press number &middot; B to close</p>
+  </div>
+
+  <div id="scoreboard" class="hidden"></div>
+  <div id="center-msg" class="hidden"></div>
+  <div id="vignette"></div>
+  <div id="hitflash"></div>
+</div>
+
+<script type="module" src="/js/main.ts"></script>
+</body>
+</html>

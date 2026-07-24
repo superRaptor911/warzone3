@@ -1,0 +1,83 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```sh
+npm start                 # serve game on http://localhost:3000 (env PORT overrides)
+npm test                  # tsc type check, then both test files in order
+npm run check             # type check only (tsc --noEmit)
+node test/matchflow.ts    # fast: room-level unit tests (no network)
+node test/smoke.ts        # slower (~30s): boots a real server on port 3199, drives ws clients through both modes
+npm run vendor            # re-copy pixi.js / pixi-filters ESM builds into client/vendor/ (run after upgrading them)
+```
+
+No build step, no lint. Everything is TypeScript executed directly: Node (≥22.18) runs
+`.ts` files natively via type stripping, and the server strips types on the fly
+(`stripTypeScriptTypes` from `node:module`) when serving `client/` and `shared/` files to
+the browser — edit a client file, refresh the tab. Server changes require restarting
+`npm start`. `tsc` never emits; it is purely a checker.
+
+Tests print `ok:`/`FAIL:` lines and exit non-zero on failure. There is no test framework; add checks with the local `check(cond, msg)` helper.
+
+## TypeScript rules
+
+- **Erasable syntax only** (`erasableSyntaxOnly` in tsconfig): no enums, no namespaces,
+  no parameter properties. Types must strip to whitespace — this is what lets Node and
+  the dev server run the sources without a compile step.
+- Relative import specifiers use explicit `.ts` extensions (`import { x } from './y.ts'`)
+  — required by Node's loader; the browser receives them stripped and re-requests the
+  `.ts` URLs, which the server serves as `text/javascript`.
+- `shared/types.ts` holds the wire protocol (snapshots, events, input messages) and must
+  stay type-only — it strips to nothing, and every import of it is `import type`.
+- Client files import shared code via relative paths (`../../shared/…`), which resolve
+  identically for tsc, Node, and the browser.
+
+## Architecture
+
+Multiplayer top-down shooter: authoritative Node server (`ws` is the only runtime dependency), canvas client, two modes (5v5 TDM, co-op zombie survival), server-side bots.
+
+### The shared-simulation contract (most important invariant)
+
+`shared/` is imported by **both** the Node server and the browser (served with types stripped at `/shared/`). The client predicts its own movement by replaying unacked inputs through the exact same code the server runs:
+
+- `shared/physics.ts` — `stepMove` (movement + tile collision) and `tickSprint` (stamina). Any change to how players move **must** live here, not in server- or client-only code, or prediction desyncs and players rubber-band.
+- `shared/maps.ts` — `Grid` (tile queries, DDA raycast, LOS) and programmatic map builders. Maps are built with code (border/hollowRect/door/crate helpers), never hand-drawn ASCII; `test/smoke.ts` flood-fills every map to assert full connectivity — run it after any map edit.
+- `shared/weapons.ts`, `shared/constants.ts` — tuning values used by both sides.
+- `shared/types.ts` — protocol/snapshot/entity types (type-only, see above).
+
+Client-side, `client/js/state.ts` (`simStep`) mirrors server `applyInput` movement. If you add input-affected state (like stamina), it must: (1) live in shared code, (2) be replicated in the snapshot `self` block, (3) be restored in `GameState.addSnapshot` before replay.
+
+### Server (`server/`)
+
+`room.ts` holds the base `Room`: 30Hz tick, per-player input queue with a dt budget (anti-speedhack), hitscan resolution, damage/kill bookkeeping, and 15Hz personalized snapshots (`base` object mutated per client with `ack` + `self`). Mode rooms subclass it and override hooks: `addPlayer`, `removeBot`, `hitscanTargets`, `damageTarget`, `onPlayerDeath`, `modeUpdate`, `respawn`, `inputAllowed`, `modeSnapshot`, and the bot hooks (`botEnemies`, `botGoal`, `botGoalReached`, `botThreat`). The base class defines them as no-op stubs (or optional methods) so `botThink` and matchmaking can call them mode-agnostically.
+
+- `tdm.ts` — teams, score/time limits, spawn selection, match restart, bot eviction when a human joins a full team.
+- `zombie.ts` — wave composition/scaling, zombie AI (direct steer on LOS else A*), shop, revive-on-wave-clear, squad-wipe reset, and **frenzy**: remaining ≤3 zombies or waveAge >75s ramps `z.effSpeed` above player walk speed (anti-kiting, paired with sprint stamina).
+- `bot.ts` — bots are not special-cased in the sim: `botThink` emits the same input objects a client would send (`BotInput`), processed through the same pipeline. Skill knobs are `errBase`/`reaction` in `createBotController`.
+- `entities.ts` — `Player`/`Zombie` interfaces and factories; `index.ts` — static serving (with on-the-fly type stripping), ws join/matchmaking (first room of the mode with human capacity), message routing. Wire input is parsed as `any` and validated where consumed. Rooms are destroyed when the last human leaves; bots never keep a room alive.
+
+### Client (`client/js/`)
+
+`main.ts` is the orchestrator; per frame it sends one input message and runs a **local gun-feel mirror** (muzzle flash/tracer/sound/cooldown/spread fired immediately) while the server remains authoritative for hits and ammo — hitmarkers/damage numbers come only from server events. Remote entities render 130ms in the past via snapshot interpolation (`INTERP_DELAY_MS`). Own `shot` events from the server are skipped (already predicted). UI is DOM (`hud.ts`), not canvas; sounds are WebAudio-synthesized in `audio.ts` (no image/audio assets shipped).
+
+### Rendering (`client/js/gfx/`, PixiJS v8 / WebGL)
+
+`render.ts` is a facade re-exporting `Renderer`/`DrawView` from `gfx/renderer.ts`. Pixi is **vendored, not bundled**: `npm run vendor` copies the single-file ESM builds (`pixi.min.mjs`, `pixi-filters.mjs`) into `client/vendor/`, and an import map in `index.html` resolves the bare `pixi.js`/`pixi-filters` specifiers (tsc resolves types from the devDependencies). No build step; `client/vendor/` is outside tsconfig `include` on purpose.
+
+- `gfx/renderer.ts` — the Pixi `Application` is a **page-lifetime singleton** (`main.ts` constructs a Renderer per `welcome`, reconnects included; re-initializing on the same canvas would leak WebGL contexts). `Renderer.create` is async (WebGL init) — `main.ts` guards event handlers against the ~1-frame gap. Pixi's ticker is stopped; `main.ts` owns the only rAF loop and `draw()` calls `app.render()` manually. `resolution: 1, autoDensity: false` keeps `canvas.width === innerWidth` so the mouse-world math in `main.ts` stays exact.
+- `gfx/textures.ts` — every shape is baked once into a single canvas atlas (`tex := entries` keyed by name); team/type-colored shapes are baked **white and tinted at runtime**. Map + minimap keep the original Canvas2D bakes uploaded as static textures (asserts ≤4096px). Drop a Pixi spritesheet at `client/assets/atlas.json` with frame names matching registry keys to reskin with zero code changes (`tryLoadArtAtlas`).
+- `gfx/scene.ts` — layer tree (order is load-bearing): `world(ground<under<actors<fxTop)` < lightmap < `worldFx(emissive<floats)` < screen UI < minimap. `worldFx` sits **above** the lightmap so tracers/flashes/damage numbers are never darkened. Entity visuals are per-id pooled containers (mark-and-sweep against each snapshot).
+- `gfx/fxsync.ts` — mirrors the `Fx` pools (which stay pure simulation data) onto pooled sprites/`ParticleContainer`s; pools only grow, extras are hidden — zero allocation per steady-state frame.
+- `gfx/lights.ts` — screen-sized lightmap RenderTexture composited with multiply blend. Zombie mode: 128-ray visibility polygon (via `grid.raycast`) masks the player light; **dims, never hides** (ambient floor is one constant). TDM: ambience only, **no LOS masking** — that would change gameplay information. Muzzle-flash light pulses come from `fx.glows`. Core blend modes only (`add`/`multiply`) — the vendored bundle can't resolve `pixi.js/advanced-blend-modes`.
+- `gfx/decals.ts` — persistent blood stamped into a half-res map-sized RenderTexture (one tiny render pass per stamp, zero per-frame cost); wiped on `matchstart` (TDM restart / zombie squad-wipe — both modes emit it).
+- Bloom (`AdvancedBloomFilter`) applies to the `emissive` container only, toggled invisible on idle frames.
+
+### Gotchas
+
+- Weapon spread bloom only decays after `SPREAD_DECAY_DELAY` (0.25s) since the last shot (`server/room.ts`); a plain per-tick decay lets high-RPM weapons out-recover their own bloom. The client mirrors this in `main.ts` for the crosshair.
+- Semi-auto fire is edge-detected server-side via `firePrev`; bots alternate their `fire` flag (`fireTick`) to produce edges.
+- Zombie-mode rooms are never in state `'live'` (`break`/`wave`/`over`) — that's why `inputAllowed()` exists; don't test `state === 'live'` in shared paths.
+- Snapshot fields use short names (`k`, `d`, `w`, `rld`, `prot`, `fr`, `stam`, `spg`) to keep JSON small; they are typed in `shared/types.ts` — extend the types there when adding fields, and keep both ends consistent.
+- `Snapshot` is a discriminated union on `mode` — narrow with `snap.mode === 'tdm'` (not the client's local `mode` variable) before touching mode-specific fields.

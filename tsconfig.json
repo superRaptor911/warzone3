@@ -1,0 +1,24 @@
+{
+  // Type-checking only (npm run check). Nothing is ever emitted: Node 26 runs
+  // .ts files natively (type stripping) and server/index.ts strips types on
+  // the fly when serving client/shared .ts files to the browser.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    // enforce the syntax subset Node's type stripping supports (no enums,
+    // namespaces, or parameter properties)
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["shared", "server", "client/js", "test"]
+}
