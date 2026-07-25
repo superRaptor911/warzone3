@@ -29,6 +29,7 @@ export interface Player {
   spread: number; sinceShot: number; moving: boolean; firePrev: boolean;
   respawnT: number; protectT: number;
   lastSeq: number; inputQueue: InputMsg[]; inputBudget: number;
+  lastRt: number; // last reported client render time, for lag compensation (0 = none)
   kills: number; deaths: number; points: number; damageDealt: number;
   joinedAt: number;
   botCtl: BotController | null; // bot controller state, set for bots
@@ -48,7 +49,7 @@ export function createPlayer(
     fireCd: 0, reloadT: 0, switchT: 0,
     spread: 0, sinceShot: 0, moving: false, firePrev: false,
     respawnT: 0, protectT: 0,
-    lastSeq: 0, inputQueue: [], inputBudget: 0,
+    lastSeq: 0, inputQueue: [], inputBudget: 0, lastRt: 0,
     kills: 0, deaths: 0, points: 0, damageDealt: 0,
     joinedAt: Date.now(),
     botCtl: null,

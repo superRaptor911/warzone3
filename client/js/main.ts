@@ -11,8 +11,9 @@ import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
 import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
+import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
-import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
+import type { GameEvent, GameMode, InputMsg, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -42,6 +43,8 @@ let quality: QualityTier = storedQ === 'fast' || storedQ === 'sharp'
 
 // local gun-feel mirror (server stays authoritative for damage/ammo)
 const gun = { cd: 0, spread: 0, sinceShot: 0, wasDown: false };
+const reloadPred = newReloadMirror();
+let lastSlot = -1;
 let growlTimer = 2;
 let perfFrames = 0, perfSince = 0, perfFps = 0; // FPS counter (500ms window)
 let deadFollow: Vec2 | null = null; // spectate target pos in zombie mode
@@ -460,7 +463,12 @@ function loop(t: number): void {
     ? tickFireCadence(cadence, held, w.auto, fireIntervalMs(w) / 1000, dt)
     : held;
   seq++;
-  const msg = { t: 'input', seq, dt, keys, aim, fire: firing, sprint };
+  const msg: InputMsg = { t: 'input', seq, dt, keys, aim, fire: firing, sprint };
+  // The render time this input was aimed at, so the server can resolve our
+  // shots against the world we were actually looking at. Omitted until the
+  // server clock is synced, where renderTime() has nothing to report.
+  const rt = state.renderTime();
+  if (rt) msg.rt = rt;
   net.send(msg);
   if (alive) state.predict({ seq, dt, keys, sprint });
 
@@ -471,13 +479,24 @@ function loop(t: number): void {
     if (!alive || stam <= 0) touch.setSprint(false);
   }
 
+  // --- reload mirror: run locally, then let the server end it ---
+  if (self.slot !== lastSlot) { cancelReload(reloadPred); lastSlot = self.slot; }
+  if (!alive) cancelReload(reloadPred);
+  const reloadShown = tickReload(reloadPred, self.reloadT, dt);
+  // The bar shows the optimistic local clock so it moves the instant R is
+  // pressed; firing gates on whichever of the two is still running, so a
+  // prediction that finishes ~RTT/2 early can never license a phantom tracer.
+  // `self.sw` is the weapon-switch lockout, which the mirror ignored entirely
+  // before — at high ping that produced tracers the server refused outright.
+  const fireBlocked = Math.max(reloadShown, self.reloadT, self.sw) > 0;
+
   // --- local gun feel (muzzle/tracer/sound/kick predicted immediately) ---
   gun.cd -= dt;
   gun.sinceShot += dt;
   if (gun.sinceShot > 0.25 && gun.spread > 0) gun.spread = Math.max(0, gun.spread - w.recover * dt);
   const magNow = self.ammo[self.slot] ? self.ammo[self.slot].mag : 0;
   const freshClick = firing && !gun.wasDown;
-  if (firing && gun.cd <= 0 && self.reloadT <= 0 && magNow > 0 && (w.auto || freshClick)) {
+  if (firing && gun.cd <= 0 && !fireBlocked && magNow > 0 && (w.auto || freshClick)) {
     gun.cd = fireIntervalMs(w) / 1000;
     gun.sinceShot = 0;
     let spr = (w.baseSpread + gun.spread);
@@ -502,7 +521,11 @@ function loop(t: number): void {
   const tapReload = touch.active && touch.consume('reload');
   const tapSwap = touch.active && touch.consume('swap');
   const tapArmory = touch.active && touch.consume('armory');
-  if (input.consume('r') || tapReload) { net.send({ t: 'reload' }); audio.click(0.2); }
+  if (input.consume('r') || tapReload) {
+    net.send({ t: 'reload' });
+    audio.click(0.2);
+    startReload(reloadPred, wid, self.ammo[self.slot]);
+  }
   if (input.consume('b') || tapArmory) hud.toggleBuy();
   if (input.consume('escape')) hud.toggleBuy(false);
   if (tapSwap && alive && self.slots.length > 1) {
@@ -514,8 +537,9 @@ function loop(t: number): void {
   // the reload, and a dropped packet just retries.
   const curAmmo = self.ammo[self.slot];
   autoReloadT -= dt;
-  if (touch.active && alive && curAmmo && curAmmo.mag === 0 && curAmmo.reserve > 0 && self.reloadT <= 0) {
-    if (autoReloadT <= 0) { net.send({ t: 'reload' }); autoReloadT = 0.5; }
+  if (touch.active && alive && curAmmo && curAmmo.mag === 0 && curAmmo.reserve > 0
+      && reloadShown <= 0 && !reloadPred.active) {
+    if (autoReloadT <= 0) { net.send({ t: 'reload' }); autoReloadT = 0.5; startReload(reloadPred, wid, curAmmo); }
   } else if (autoReloadT < 0) autoReloadT = 0;
   if (hud.buyOpen) {
     // number keys buy while the armory is open
@@ -572,7 +596,12 @@ function loop(t: number): void {
     fx, spread: Math.min(spreadShown, w.maxSpread),
   });
 
-  hud.update(snap, self, myId, state.pred ? state.pred.stamina : 100);
+  // Only clone while predicting — this runs every frame, and the merge exists
+  // solely to feed the HUD the local reload clock instead of the server's.
+  const selfView = reloadPred.active
+    ? { ...self, reloadT: reloadShown, reloadTotal: reloadPred.total }
+    : self;
+  hud.update(snap, selfView, myId, state.pred ? state.pred.stamina : 100);
   hud.scoreboard(snap, myId, !!input.keys['tab'] || scoresOpen);
   input.endFrame();
   touch.endFrame();

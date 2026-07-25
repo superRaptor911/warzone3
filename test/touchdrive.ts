@@ -221,10 +221,17 @@ const fired = await page.waitFor(`${mag0} - Number(document.getElementById('mag'
 const mag1 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
 check(fired, `held stick keeps a semi-auto firing (mag ${mag0} -> ${mag1}; a raw held flag would stop at 1)`);
 await page.release();
+// Settle first. At the moment of release there is reliably one more pulsed
+// fire input already in flight, so the mag drops once more after the thumb is
+// up (measured: mag reads 9 before release and 8 a moment later). Sampling
+// immediately raced that last shot and failed ~30% of the time. A 700ms window
+// still catches fire that genuinely continues — that would spend several
+// rounds, not one.
+await sleep(250);
 const mag2 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
 await sleep(700);
-check(Number(await page.evaluate<string>(`document.getElementById('mag').textContent`)) === mag2,
-  'releasing the stick stops the fire');
+const mag3 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
+check(mag3 === mag2, `releasing the stick stops the fire (${mag2} -> ${mag3})`);
 check(await page.evaluate(`document.getElementById('astick').classList.contains('hidden')`), 'aim stick hides on release');
 
 // sprint toggle: arms on tap, survives standing still, leaks no stamina

@@ -27,6 +27,10 @@ export interface InputMsg {
   aim?: number;
   fire?: boolean;
   sprint?: boolean;
+  // Render time this input was aimed at, on the server clock (the client's
+  // GameState.renderTime()). Lets the server resolve shots against the world
+  // the shooter was actually looking at. Untrusted: clamped server-side.
+  rt?: number;
 }
 
 export interface Ammo { mag: number; reserve: number }
@@ -83,6 +87,9 @@ export interface SelfSnap {
   ammo: Ammo[];
   reloadT: number;
   reloadTotal: number;
+  // Weapon-switch lockout remaining. The client's local gun mirror has to gate
+  // on this too, or at high ping it fires phantom tracers the server rejects.
+  sw: number;
   points: number;
   respawnT: number;
   stam: number;

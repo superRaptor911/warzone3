@@ -1,7 +1,11 @@
 // Direct room-level tests for match lifecycle transitions not covered by smoke.ts.
 import { TDMRoom } from '../server/tdm.ts';
 import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
-import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS } from '../shared/constants.ts';
+import {
+  TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
+  TICK_RATE, PLAYER_SPEED, PLAYER_HP,
+} from '../shared/constants.ts';
+import { T_FLOOR, type Grid } from '../shared/maps.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
@@ -9,11 +13,25 @@ import {
   DEAD_ZONE, STICK_R, deflection, newFireCadence, newLead, stickKeys, tickFireCadence, tickLead,
 } from '../client/js/stick.ts';
 import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
+import { CONFIRM_GRACE, cancelReload, newReloadMirror, startReload, tickReload } from '../client/js/reload.ts';
 
 let failures = 0;
 function check(cond: unknown, msg: string): void {
   if (cond) console.log('  ok:', msg);
   else { failures++; console.error('  FAIL:', msg); }
+}
+
+// Centre of a run of clear floor tiles, so tests can place entities without a
+// wall silently changing what is being measured.
+function openLane(g: Grid, tiles: number): { x: number; y: number } | null {
+  for (let ty = 1; ty < g.h - 1; ty++) {
+    for (let tx = 1; tx < g.w - tiles - 1; tx++) {
+      let clear = true;
+      for (let i = 0; i < tiles; i++) if (g.get(tx + i, ty) !== T_FLOOR) { clear = false; break; }
+      if (clear) return { x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE };
+    }
+  }
+  return null;
 }
 
 // ---- TDM: score-limit end + restart ----
@@ -37,6 +55,98 @@ console.log('tdm match flow');
   check(room.teamCount(TEAM.RED) === 5, 'red team full');
   const human = room.addPlayer({ name: 'H2', bot: false, team: TEAM.RED });
   check(human !== null && room.teamCount(TEAM.RED) === 5, 'human joining full team evicts a bot');
+  room.destroy();
+}
+
+// ---- input carry-over: a stalled burst is simulated, not discarded ----
+// A laggy client's inputs arrive in one flush. The tick may only simulate
+// 1.6x its own duration, so the remainder has to bank for the next tick
+// instead of being acked-but-dropped (which showed up as a rubber-band snap).
+console.log('input carry-over');
+{
+  const room = new TDMRoom('c1');
+  const p = room.addPlayer({ name: 'P', bot: false, team: TEAM.RED })!;
+  // Park the player where there is clear floor to the right, so the run is
+  // bounded by the input budget rather than by a wall.
+  const spot = openLane(room.grid, 9);
+  check(spot !== null, 'found an open lane to run down');
+  p.x = spot!.x; p.y = spot!.y; p.protectT = 0;
+  const x0 = p.x;
+
+  const tickDt = 1 / TICK_RATE;
+  const BURST = 12; // 12 x 33.3ms = 400ms of input in one flush
+  for (let i = 0; i < BURST; i++) {
+    room.queueInput(p, { t: 'input', seq: i + 1, dt: tickDt, keys: { d: 1 }, aim: 0 });
+  }
+  for (let i = 0; i < 20; i++) room.update();
+
+  const travelled = p.x - x0;
+  const full = BURST * tickDt * PLAYER_SPEED;
+  check(travelled > full * 0.8,
+    `stalled burst is simulated, not discarded (${travelled.toFixed(1)}px of ${full.toFixed(1)}px)`);
+  check(p.lastSeq === BURST, `every queued input acked (lastSeq=${p.lastSeq})`);
+  room.destroy();
+}
+
+// ---- hit rewind: shots resolve against the world the shooter was rendering ----
+console.log('hit rewind');
+{
+  const room = new TDMRoom('r1');
+  const shooter = room.addPlayer({ name: 'S', bot: false, team: TEAM.RED })!;
+  const target = room.addPlayer({ name: 'T', bot: false, team: TEAM.BLUE })!;
+  shooter.protectT = 0; target.protectT = 0; shooter.moving = false; shooter.spread = 0;
+
+  const lane = openLane(room.grid, 9)!;
+  shooter.x = lane.x; shooter.y = lane.y; shooter.aim = 0; // firing along +x
+
+  // Broadcast a history of the target sliding off the firing line, 66ms apart
+  // (the real 15Hz cadence). room.now is driven by hand so the frames get
+  // distinct, deterministic timestamps. The span has to exceed MAX_REWIND_MS,
+  // or every clamped claim would land on the oldest frame and the cap would be
+  // indistinguishable from "older than the buffer".
+  const T0 = 1_000_000;
+  const OFFSETS = [0, 6, 12, 18, 24, 30, 36, 42, 48]; // px perpendicular to the shot
+  const SEEN = T0 + 2 * 66; // the frame the shooter was looking at (offset 12)
+  for (let i = 0; i < OFFSETS.length; i++) {
+    room.now = T0 + i * 66;
+    target.x = lane.x + 150;
+    target.y = lane.y + OFFSETS[i];
+    room.broadcast();
+  }
+  room.now = T0 + (OFFSETS.length - 1) * 66; // 528ms after the first frame
+
+  const hitsWith = (rt: number): boolean => {
+    shooter.lastRt = rt;
+    const targets = room.hitscanTargets(shooter);
+    room.rewindTargets(targets, room.rewindFrameFor(shooter));
+    return castPellet(room.grid, shooter.x, shooter.y, 1, 0, 2000, targets).hit !== null;
+  };
+
+  check(target.y - lane.y > PLAYER_RADIUS * 2, 'target has moved clear of the firing line');
+  check(!hitsWith(0), 'no rewind: the shot misses where the target no longer is');
+  check(hitsWith(SEEN), 'rewind: the shot hits where the shooter saw the target');
+
+  // An absurd claim lands at the cap rather than reaching further back.
+  // now - 400ms = T0+128, which is 62/66 of the way from offset 6 to offset 12.
+  shooter.lastRt = T0 - 5_000;
+  const cappedY = room.rewindFrameFor(shooter)!.get(target.id)!.y - lane.y;
+  check(Math.abs(cappedY - (6 + 6 * (62 / 66))) < 1,
+    `rewind claim clamps to the 400ms cap (y+${cappedY.toFixed(2)})`);
+
+  // Rewinding must move positions only — a dead target stays unhittable.
+  target.alive = false;
+  check(!hitsWith(SEEN), 'rewind does not resurrect a dead target');
+  target.alive = true;
+
+  // End to end through fireShot, which is where the rewind is actually wired in.
+  target.hp = PLAYER_HP; shooter.spread = 0; shooter.lastRt = SEEN;
+  room.fireShot(shooter, WEAPONS.pistol);
+  check(target.hp < PLAYER_HP, `fireShot applies the rewind (target hp ${target.hp})`);
+
+  // A bot reports no render time and must resolve at the present.
+  target.hp = PLAYER_HP; shooter.spread = 0; shooter.lastRt = 0;
+  room.fireShot(shooter, WEAPONS.pistol);
+  check(target.hp === PLAYER_HP, 'no render time reported means no compensation');
   room.destroy();
 }
 
@@ -116,6 +226,80 @@ console.log('zombie checkpoints');
   r2.applyCheckpoint(50);
   check(r2.checkpoint === 0, 'second human cannot arm a checkpoint on a fresh room');
   r2.destroy();
+}
+
+// ---- predicted reload mirror ----
+// The server owns ammo; the mirror only exists so the bar moves on the frame R
+// is pressed instead of one round trip later. What matters is that it always
+// yields to the server: it must never outlive a refusal, never end a reload the
+// server is still running, and never report ready before the server does.
+console.log('reload mirror');
+{
+  const RIFLE = WEAPONS.rifle.reloadMs / 1000;
+  const dt = 1 / 60;
+
+  // starts immediately, before the server has said anything
+  const r = newReloadMirror();
+  check(startReload(r, 'rifle', { mag: 4, reserve: 60 }), 'a partial mag starts a predicted reload');
+  check(Math.abs(tickReload(r, 0, dt) - (RIFLE - dt)) < 1e-6,
+    'the bar moves on the first frame, with the server still reporting nothing');
+  check(!startReload(r, 'rifle', { mag: 4, reserve: 60 }), 'a second press while reloading is ignored');
+
+  // the server picks it up one round trip later and then owns the ending
+  for (let i = 0; i < 15; i++) tickReload(r, 0, dt);   // ~250ms of silence
+  check(r.active && !r.confirmed, 'still predicting while unconfirmed');
+  tickReload(r, RIFLE - 0.3, dt);
+  check(r.confirmed, 'server reporting a reload confirms the mirror');
+  let shown = 1;
+  for (let i = 0; i < 200 && r.active; i++) shown = tickReload(r, RIFLE - 0.3, dt);
+  check(r.active && shown === 0,
+    'a local clock that runs out early keeps the mirror up rather than clearing it');
+  shown = tickReload(r, 0, dt);
+  check(!r.active && shown === 0, 'the server finishing ends the mirror');
+
+  // a refused reload must back itself out rather than hang the bar
+  const r2 = newReloadMirror();
+  startReload(r2, 'rifle', { mag: 4, reserve: 60 });
+  let t = 0;
+  while (r2.active && t < 5) { tickReload(r2, 0, dt); t += dt; }
+  check(!r2.active && t >= CONFIRM_GRACE && t < CONFIRM_GRACE + 0.1,
+    `an unacknowledged reload backs out after the grace period (${t.toFixed(2)}s)`);
+
+  // the same magazine test the server applies, so we never predict a refusal
+  const r3 = newReloadMirror();
+  check(!startReload(r3, 'rifle', { mag: WEAPONS.rifle.mag, reserve: 60 }), 'a full mag does not reload');
+  check(!startReload(r3, 'rifle', { mag: 0, reserve: 0 }), 'an empty reserve does not reload');
+  check(!startReload(r3, 'rifle', undefined), 'missing ammo does not reload');
+
+  // switching weapons or dying drops the prediction
+  const r4 = newReloadMirror();
+  startReload(r4, 'rifle', { mag: 4, reserve: 60 });
+  cancelReload(r4);
+  check(!r4.active && tickReload(r4, 0, dt) === 0, 'cancel drops the mirror to the server value');
+}
+
+// ---- switch lockout reaches the client ----
+// The local gun mirror gates firing on self.sw. Without it, a client at high
+// ping keeps firing through the 350ms switch lockout and emits tracers the
+// server refuses outright.
+console.log('switch lockout on the wire');
+{
+  const room = new TDMRoom('s1');
+  const p = room.addPlayer({ name: 'P', bot: false, team: TEAM.RED })!;
+  const sent: string[] = [];
+  // stand in for a connected socket so broadcast() builds the per-client block
+  room.clients.set(p.id, { send: (s: string) => sent.push(s) } as never);
+
+  room.broadcast();
+  check(JSON.parse(sent.at(-1)!).self.sw === 0, 'idle player reports no lockout');
+  room.trySwitch(p, 0);
+  room.broadcast();
+  const sw = JSON.parse(sent.at(-1)!).self.sw;
+  check(sw > 0, `switching arms the lockout on the wire (sw=${sw})`);
+  room.advanceTimers(p, 1); // burn it
+  room.broadcast();
+  check(JSON.parse(sent.at(-1)!).self.sw === 0, 'lockout clears once the switch completes');
+  room.destroy();
 }
 
 // ---- sprint stamina ----

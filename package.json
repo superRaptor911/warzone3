@@ -9,6 +9,7 @@
     "check": "tsc",
     "test": "tsc && node test/matchflow.ts && node test/smoke.ts",
     "test:touch": "node test/touchdrive.ts",
+    "test:latency": "node test/latency.ts",
     "vendor": "mkdir -p client/vendor && cp node_modules/pixi.js/dist/pixi.min.mjs node_modules/pixi-filters/dist/pixi-filters.mjs client/vendor/"
   },
   "dependencies": {

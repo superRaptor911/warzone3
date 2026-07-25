@@ -8,11 +8,40 @@ import {
 import { weaponOf, ammoOf, type Player, type Zombie } from './entities.ts';
 import { botThink } from './bot.ts';
 import type {
-  GameEvent, GameMode, InputMsg, PlayerSnap, RoomState, SnapshotBase, Vec2,
+  GameEvent, GameMode, InputMsg, PlayerSnap, RoomState, SnapshotBase, Vec2, ZombieSnap,
 } from '../shared/types.ts';
 import type { WebSocket } from 'ws';
 
 const SPREAD_DECAY_DELAY = 0.25; // s since last shot before bloom recovers
+// How much stalled input may bank up waiting for a tick to simulate it. Bounds
+// how far behind realtime a recovering client can drag its own simulation.
+const MAX_BACKLOG = 0.3; // s
+
+// One input message's worth of simulated time, clamped against garbage and
+// speedhacks. Also applied to the remainder left on a partially-drained input.
+function clampInputDt(dt: number | undefined, tickDt: number): number {
+  return Math.min(Math.max(dt || tickDt, 0.002), 0.05);
+}
+
+// Lag compensation. How far back a client may ask the server to rewind before
+// resolving its shots.
+//
+// Size this against the shooter's whole *view age*, not their ping: a client
+// reports renderTime(), which already trails the server by RTT plus
+// INTERP_DELAY_MS, and the resolving tick adds up to another 33ms. So a
+// 250ms-RTT player needs ~400ms, not 250ms — a cap set to the RTT alone leaves
+// them still leading by most of a body width. 400ms covers 200-250ms RTT fully
+// and 300ms to within ~10px.
+//
+// The cost is symmetrical: a victim can be damaged up to this long after
+// reaching cover. This constant is the shooter/victim fairness dial.
+// Raising it further requires raising HISTORY_FRAMES to match.
+const MAX_REWIND_MS = 400;
+// Depth of the broadcast-position history, in snapshots (15Hz). Must comfortably
+// exceed MAX_REWIND_MS; ~800ms leaves room for a larger interpolation buffer.
+const HISTORY_FRAMES = 12;
+
+interface HistoryFrame { t: number; pos: Map<number, Vec2> }
 
 // What a shot can hit; produced by hitscanTargets, consumed by damageTarget.
 export type Target =
@@ -37,6 +66,7 @@ export class Room {
   tick: number;
   now: number;
   state: RoomState;
+  history: HistoryFrame[];
   interval: NodeJS.Timeout;
 
   constructor(id: string, mode: GameMode, mapName: string) {
@@ -50,6 +80,7 @@ export class Room {
     this.tick = 0;
     this.now = Date.now();
     this.state = 'live';
+    this.history = [];
     this.interval = setInterval(() => this.update(), 1000 / TICK_RATE);
   }
 
@@ -76,16 +107,27 @@ export class Room {
           p.inputQueue = [input];
         } else p.inputQueue = [];
       }
+      // Drain at most 1.6x the tick's own duration (anti-speedhack), but bank
+      // the rest for the next tick rather than dropping it: a client whose
+      // packets were delayed flushes its whole stall at once, and discarding
+      // the tail desyncs its prediction into a visible snap. An input that
+      // does not fit whole is simulated up to the budget and its remainder
+      // left on the queue, so the drain rate is exactly 1.6x regardless of the
+      // client's frame time.
       p.inputBudget = tickDt * 1.6;
       let processed = 0;
-      for (const m of p.inputQueue) {
-        const dt = Math.min(Math.max(m.dt || tickDt, 0.002), 0.05, p.inputBudget);
-        if (dt <= 0) { p.lastSeq = m.seq || p.lastSeq; continue; }
+      while (p.inputQueue.length && p.inputBudget > 0) {
+        const m = p.inputQueue[0];
+        const want = clampInputDt(m.dt, tickDt);
+        const dt = Math.min(want, p.inputBudget);
         p.inputBudget -= dt;
         processed += dt;
         this.applyInput(p, m, dt);
+        if (want - dt > 0.001) { m.dt = want - dt; break; } // finish it next tick
+        p.lastSeq = m.seq || p.lastSeq;
+        p.inputQueue.shift();
       }
-      p.inputQueue = [];
+      this.trimBacklog(p, tickDt);
       if (processed < tickDt) this.advanceTimers(p, tickDt - processed);
       if (!p.alive && p.respawnT > 0) {
         p.respawnT -= tickDt;
@@ -112,13 +154,86 @@ export class Room {
     }
   }
 
+  // Cap the banked backlog, dropping the stalest inputs first. They are acked
+  // on the way out: seq is monotonic, so the client drops them from `pending`
+  // and reconciles to the server position instead of replaying them forever.
+  trimBacklog(p: Player, tickDt: number): void {
+    let banked = 0;
+    for (const m of p.inputQueue) banked += clampInputDt(m.dt, tickDt);
+    while (p.inputQueue.length && banked > MAX_BACKLOG) {
+      const m = p.inputQueue.shift()!;
+      banked -= clampInputDt(m.dt, tickDt);
+      p.lastSeq = m.seq || p.lastSeq;
+    }
+  }
+
+  // ---- lag compensation ----
+  // Positions exactly as they were broadcast, so a shot can be resolved against
+  // the world the shooter's client was actually rendering. Recorded on
+  // broadcast rather than per tick, and from the rounded snapshot values, so a
+  // rewind reproduces the client's view instead of approximating it.
+  recordHistory(snap: SnapshotBase & Record<string, unknown>): void {
+    const pos = new Map<number, Vec2>();
+    for (const s of snap.players) pos.set(s.id, { x: s.x, y: s.y });
+    // Zombies only exist on ZombieRoom's snapshot. Reading them off the built
+    // object keeps this in one place, instead of a per-mode override that a
+    // future mode could silently forget to implement.
+    const zs = snap.zombies as ZombieSnap[] | undefined;
+    if (zs) for (const z of zs) pos.set(z.id, { x: z.x, y: z.y });
+    this.history.push({ t: this.now, pos });
+    if (this.history.length > HISTORY_FRAMES) this.history.shift();
+  }
+
+  // Interpolated positions at a past instant, or null if that instant is not in
+  // the buffer's past. Mirrors the client's own snapshot interpolation, which is
+  // what makes the reconstruction match what the shooter saw.
+  rewindFrame(atTime: number): Map<number, Vec2> | null {
+    const h = this.history;
+    let bi = -1;
+    for (let i = 1; i < h.length; i++) if (h[i].t >= atTime) { bi = i; break; }
+    if (bi < 0) return null;
+    const a = h[bi - 1], b = h[bi];
+    if (atTime <= a.t) return a.pos; // older than the buffer — clamp to oldest
+    const span = b.t - a.t;
+    const f = span > 0 ? (atTime - a.t) / span : 0;
+    const out = new Map<number, Vec2>();
+    for (const [id, pa] of a.pos) {
+      const pb = b.pos.get(id);
+      out.set(id, pb ? { x: pa.x + (pb.x - pa.x) * f, y: pa.y + (pb.y - pa.y) * f } : pa);
+    }
+    return out;
+  }
+
+  // The frame this player's shots resolve against: their reported render time,
+  // clamped to MAX_REWIND_MS. Bots report nothing and get no rewind, which is
+  // right — they are server-side and have no view lag.
+  rewindFrameFor(p: Player): Map<number, Vec2> | null {
+    if (!p.lastRt) return null;
+    const lag = Math.min(this.now - p.lastRt, MAX_REWIND_MS);
+    if (lag <= 0) return null;
+    return this.rewindFrame(this.now - lag);
+  }
+
+  // Rewinds position only. Membership, liveness and spawn protection stay
+  // present-time, so a target killed by an earlier pellet cannot be hit again,
+  // and `ref` still points at the live entity for damageTarget.
+  rewindTargets(targets: Target[], frame: Map<number, Vec2> | null): void {
+    if (!frame) return;
+    for (const t of targets) {
+      const at = frame.get(t.id);
+      if (at) { t.x = at.x; t.y = at.y; }
+    }
+  }
+
   inputAllowed(): boolean { return this.state === 'live'; }
 
+  // Note: acking (p.lastSeq) happens in the drain loop, not here — a partially
+  // simulated input must not be acked until its remainder has been applied.
   applyInput(p: Player, m: InputMsg, dt: number): void {
-    p.lastSeq = m.seq || p.lastSeq;
     if (!p.alive || !this.inputAllowed()) return;
     this.advanceTimers(p, dt);
     if (typeof m.aim === 'number' && isFinite(m.aim)) p.aim = m.aim;
+    if (typeof m.rt === 'number' && isFinite(m.rt)) p.lastRt = m.rt;
     const keys = m.keys || {};
     const wantsMove = !!(keys.w || keys.a || keys.s || keys.d);
     const sprinting = tickSprint(p, !!m.sprint && wantsMove, dt);
@@ -153,13 +268,16 @@ export class Room {
 
   fireShot(p: Player, w: Weapon): void {
     const spread = this.effSpread(p, w);
+    const rewind = this.rewindFrameFor(p); // resolved once; same view for every pellet
     const pellets: { a: number; d: number }[] = [];
     for (let i = 0; i < w.pellets; i++) {
       const a = p.aim + (Math.random() * 2 - 1) * spread;
       const dx = Math.cos(a), dy = Math.sin(a);
       // Rebuilt per pellet on purpose: an earlier pellet may have killed a
       // target, and a stale entry would be damaged (and credited) twice.
-      const { dist: hitDist, hit } = castPellet(this.grid, p.x, p.y, dx, dy, w.range, this.hitscanTargets(p));
+      const targets = this.hitscanTargets(p);
+      this.rewindTargets(targets, rewind);
+      const { dist: hitDist, hit } = castPellet(this.grid, p.x, p.y, dx, dy, w.range, targets);
       pellets.push({ a: round2(a), d: Math.round(hitDist) });
       if (hit) {
         const dmg = damageAt(w, hitDist);
@@ -281,6 +399,7 @@ export class Room {
       players: this.playerSnapshot(), events: this.events,
       ...this.modeSnapshot(),
     };
+    this.recordHistory(base);
     for (const [id, ws] of this.clients) {
       const p = this.players.get(id);
       if (!p) continue;
@@ -290,6 +409,7 @@ export class Room {
         ammo: p.slots.map(wid => p.ammo[wid]!),
         reloadT: Math.max(0, round2(p.reloadT)),
         reloadTotal: WEAPONS[p.slots[p.slot]].reloadMs / 1000,
+        sw: Math.max(0, round2(p.switchT)),
         points: p.points, respawnT: Math.max(0, round2(p.respawnT)),
         stam: round2(p.stamina), spg: p.sprinting ? 1 : 0,
       };
