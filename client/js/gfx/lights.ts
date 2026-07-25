@@ -43,6 +43,8 @@ export class Lights {
     this.appRef = appRef;
     this.tx = tx;
     this.grid = grid;
+    // Sized on the first update(); 2x2 is just a placeholder, and fit() below
+    // is what keeps it matched to the screen.
     this.rt = RenderTexture.create({ width: 2, height: 2 });
 
     this.ambient = tx.sprite('white');
@@ -58,6 +60,28 @@ export class Lights {
     layers.lightSlot.addChild(this.out);
   }
 
+  /**
+   * Keeps the lightmap texture the size of the screen.
+   *
+   * **Replaced, never resized.** Pixi caches one GPU render target per texture
+   * source, and resizing a RenderTexture it has already drawn into reallocates
+   * the texture without rebuilding that cached framebuffer: every later pass
+   * keeps writing the *old* viewport, so the rest of the screen composites
+   * against texels nothing ever wrote — full brightness, no shadow, no vision
+   * cone. That is what a phone hitting `screen.orientation.lock('landscape')`
+   * mid-boot does (390x844 -> 844x390 with the map already rendered once), and
+   * why the darkness only appeared on the *second* match: a fresh Lights sizes
+   * its texture before the first pass, where the allocation is still lazy.
+   * Runs only on a real size change, so a rotate or a window drag costs one
+   * texture, and a steady screen costs nothing.
+   */
+  private fit(vw: number, vh: number): void {
+    if (this.rt.width === vw && this.rt.height === vh) return;
+    this.rt.destroy(true);
+    this.rt = RenderTexture.create({ width: vw, height: vh });
+    this.out.texture = this.rt;
+  }
+
   private lightSprite(radius: number, tint: number, alpha: number): Sprite {
     const s = this.tx.sprite('radial');
     s.scale.set((radius * 2) / 128);
@@ -71,7 +95,7 @@ export class Lights {
   // radii below stay in world px, so what a player can see is a function of the
   // world, never of their screen size or zoom.
   update(view: DrawView, vw: number, vh: number, worldX: number, worldY: number, zoom: number): void {
-    if (this.rt.width !== vw || this.rt.height !== vh) this.rt.resize(vw, vh);
+    this.fit(vw, vh);
     const zombie = view.mode === 'zombie';
     this.ambient.tint = zombie ? AMBIENT_ZOMBIE : AMBIENT_TDM;
     this.ambient.scale.set(vw / 8, vh / 8);

@@ -137,6 +137,26 @@ class Page {
     });
   }
 
+  /** Mean luminance of the rendered frame, 0-255. Screenshot out, decode back
+   *  in: the canvas is WebGL without preserveDrawingBuffer, so nothing outside
+   *  the render loop can read its pixels, but a JPEG can be handed to the page
+   *  and measured there. Used to compare what two matches actually look like. */
+  async luma(): Promise<number> {
+    const shot = await this.send('Page.captureScreenshot', { format: 'jpeg', quality: 70 });
+    const data = (shot.result as { data: string }).data;
+    return this.evaluate<number>(`(async () => {
+      const blob = await (await fetch('data:image/jpeg;base64,${data}')).blob();
+      const img = await createImageBitmap(blob);
+      const cv = new OffscreenCanvas(img.width, img.height);
+      const g = cv.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const px = g.getImageData(0, 0, cv.width, cv.height).data;
+      let sum = 0;
+      for (let i = 0; i < px.length; i += 4) sum += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+      return sum / (px.length / 4);
+    })()`);
+  }
+
   close(): void {
     try { this.ws?.close(); } catch { /* already gone */ }
     try { this.proc.kill(); } catch { /* already gone */ }
@@ -278,6 +298,81 @@ await page.viewport(844, 390, true);
 await sleep(400);
 check(await page.evaluate(`getComputedStyle(document.getElementById('rotate')).display === 'none'`),
   'rotating back clears it');
+
+// ---- match lifecycle: a rotate mid-boot, then quit and rejoin ----
+// Two renderer-teardown bugs lived here, and neither one touched the DOM:
+//  - the lightmap RenderTexture was resized rather than replaced, so the
+//    orientation lock a phone applies while the first match is still booting
+//    left most of the screen composited against texels nothing had written —
+//    full brightness, no shadow, no vision cone — until the match was left and
+//    rejoined. Measured here as brightness: both matches must LOOK the same.
+//  - the shape atlas was destroyed with the Renderer, taking the particle
+//    pipe's bind group with it, so from the second match on every render()
+//    threw before presenting a frame: the canvas froze on the last good frame
+//    while the sim, the audio and the DOM HUD carried on. Measured here as the
+//    topbar countdown still ticking, because hud.update runs *after*
+//    renderer.draw in the frame loop and a throw takes it down too.
+console.log('\nrejoin lifecycle');
+const quitToMenu = async (): Promise<void> => {
+  await page.evaluate(`document.getElementById('pausebtn').click()`);
+  await sleep(150);
+  await page.evaluate(`document.getElementById('pz-quit').click()`);
+  await sleep(150);
+  await page.evaluate(`document.getElementById('pz-yes').click()`);
+};
+const joinOutbreak = async (): Promise<boolean> => {
+  await page.evaluate(`document.querySelector('.mode-card[data-mode="zombie"]').click()`);
+  return page.waitFor(`document.getElementById('menu').classList.contains('hidden')
+    && document.getElementById('mag').textContent !== ''`);
+};
+
+await page.viewport(390, 844, true); // a phone opens the page in portrait...
+await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
+check(await page.waitFor(`!!document.querySelector('#loadout-opts .wicon')`), 'reloaded portrait for a cold first join');
+const errorsBefore = page.errors.length;
+await page.evaluate(`document.querySelector('.mode-card[data-mode="zombie"]').click()`);
+await sleep(150);
+await page.viewport(844, 390, true); // ...and the mode card locks it landscape
+check(await page.waitFor(`document.getElementById('mag').textContent !== ''`),
+  'first match boots through the orientation flip');
+// Both matches fire a few rounds, and that is load-bearing for the second bug
+// as well as for symmetry: the shell/spark/smoke ParticleContainers are what
+// bind the shape atlas into the particle pipe's shader, and a match where
+// nobody pulls the trigger never binds it, so it cannot lose it either.
+const burst = async (): Promise<void> => {
+  await page.touch([{ x: 640, y: 250 }, { x: 730, y: 250 }]);
+  await sleep(600);
+  await page.release();
+  await sleep(1600); // muzzle flash, tracers and smoke all expire well inside this
+};
+await sleep(600);
+await burst();
+const lumaFirst = await page.luma();
+
+await quitToMenu();
+check(await page.waitFor(`!document.getElementById('menu').classList.contains('hidden')`), 'pause -> quit lands back on the menu');
+check(await page.evaluate(`document.getElementById('conn-status').textContent === ''`),
+  'a deliberate exit reports nothing, not "Could not connect"');
+await sleep(400);
+check(await joinOutbreak(), 'rejoined a second OUTBREAK match');
+await sleep(600);
+await burst();
+
+// the frame loop is still presenting frames, not throwing inside render()
+const tick0 = await page.evaluate<string>(`document.getElementById('topbar').textContent`);
+await sleep(1400);
+const tick1 = await page.evaluate<string>(`document.getElementById('topbar').textContent`);
+check(tick0 !== tick1, `the second match keeps drawing (topbar "${tick0}" -> "${tick1}")`);
+check(page.errors.length === errorsBefore,
+  `nothing thrown across the quit/rejoin cycle (${page.errors.length - errorsBefore} exceptions)`);
+
+// Same map, same spawn, same wave-0 break, no input in either: what the two
+// matches look like is the whole assertion. A lightmap that missed the rotate
+// showed up as the first match being several times brighter than the second.
+const lumaSecond = await page.luma();
+const spread = Math.abs(lumaFirst - lumaSecond) / Math.max(lumaFirst, lumaSecond);
+check(spread < 0.25,
+  `both matches light the world the same (mean luma ${lumaFirst.toFixed(1)} vs ${lumaSecond.toFixed(1)}, ${(spread * 100).toFixed(0)}% apart)`);
 
 // ---- /touch-preview.html: drives the same Touch/stick modules ----
 console.log('\ntouch preview page');
