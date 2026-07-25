@@ -5,7 +5,9 @@ import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
-import { DEAD_ZONE, STICK_R, deflection, newFireCadence, stickKeys, tickFireCadence } from '../client/js/stick.ts';
+import {
+  DEAD_ZONE, STICK_R, deflection, newFireCadence, newLead, stickKeys, tickFireCadence, tickLead,
+} from '../client/js/stick.ts';
 import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
 
 let failures = 0;
@@ -292,6 +294,43 @@ console.log('\ntouch fire cadence');
   tickFireCadence(st2, true, false, 1, dt);   // shot
   tickFireCadence(st2, false, false, 1, dt);  // release
   check(tickFireCadence(st2, true, false, 1, dt), 'a fresh press fires immediately after release');
+}
+
+// ---- touch: eased camera lead ----
+// Releasing the aim stick zeroes deflection in one frame, so the camera lead has
+// to be eased or it steps the whole TOUCH_LEAD distance at once.
+console.log('\ntouch camera lead');
+{
+  const TAU = 0.08, REACH = 140;
+
+  // frame-rate independence — the property a fixed per-frame lerp factor fails.
+  // Same 160ms of wall clock, ten small steps vs one big one.
+  const fast = newLead(); fast.x = REACH;
+  for (let i = 0; i < 10; i++) tickLead(fast, 0, 0, TAU, 0.016);
+  const slow = newLead(); slow.x = REACH;
+  tickLead(slow, 0, 0, TAU, 0.16);
+  check(Math.abs(fast.x - slow.x) < 0.5,
+    `160ms of ease is the same at 62fps and 6fps (${fast.x.toFixed(2)} vs ${slow.x.toFixed(2)})`);
+
+  // monotonic toward the target, never past it — no overshoot to hide a snap
+  const st = newLead(); st.x = REACH;
+  let prev = st.x, ok = true;
+  for (let i = 0; i < 60; i++) {
+    tickLead(st, 0, 0, TAU, 1 / 60);
+    if (st.x >= prev || st.x < 0) ok = false;
+    prev = st.x;
+  }
+  check(ok, 'the lead falls monotonically and never crosses the target');
+
+  // 250ms has to look settled, or the release still reads as a pan
+  const q = newLead(); q.x = REACH;
+  for (let i = 0; i < 15; i++) tickLead(q, 0, 0, TAU, 1 / 60);
+  check(q.x < REACH * 0.05, `a release is >=95% closed by 250ms (${q.x.toFixed(1)} of ${REACH} left)`);
+
+  // pushing off centre is the same law in reverse, and both axes move
+  const up = newLead();
+  for (let i = 0; i < 15; i++) tickLead(up, 0, -REACH, TAU, 1 / 60);
+  check(up.x === 0 && up.y < -REACH * 0.95, `the lead eases out as well as in (y ${up.y.toFixed(1)})`);
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);

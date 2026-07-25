@@ -37,6 +37,32 @@ export function stickKeys(
   return k;
 }
 
+/** Mutable state for tickLead; one per client. */
+export interface Lead { x: number; y: number }
+
+export function newLead(): Lead {
+  return { x: 0, y: 0 };
+}
+
+/**
+ * Ease a two-component offset toward a target. The aim stick floats, so it
+ * spawns at zero deflection and grows continuously as the thumb drags — but
+ * release drops deflection to zero in a single frame, which would teleport
+ * anything derived from it. This spreads that step over `tau`.
+ *
+ * The `1 - exp(-dt/tau)` form is deliberate over a fixed per-frame factor: the
+ * curve is the same wall-clock shape at 20fps and at 144fps, which matters
+ * because the only callers are phones. Asymptotic, so it never overshoots and
+ * never quite reaches the target — sub-pixel residue is invisible against a
+ * camera that is already at fractional world coordinates every frame.
+ */
+export function tickLead(st: Lead, tx: number, ty: number, tau: number, dt: number): Lead {
+  const k = 1 - Math.exp(-dt / tau);
+  st.x += (tx - st.x) * k;
+  st.y += (ty - st.y) * k;
+  return st;
+}
+
 /** Mutable state for tickFireCadence; one per client. */
 export interface FireCadence {
   t: number;    // seconds until the next shot may be released

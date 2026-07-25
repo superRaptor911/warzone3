@@ -10,7 +10,7 @@ import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
-import { DEAD_ZONE, newFireCadence, tickFireCadence } from './stick.ts';
+import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
 import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
@@ -56,6 +56,13 @@ let scoresOpen = false;
 // camera pull toward the aim stick, in world px at full deflection — the
 // touch equivalent of the desktop mouse lead
 const TOUCH_LEAD = 140;
+// Ease time for that pull. Lifting the thumb zeroes deflection in one frame, so
+// an unsmoothed lead snaps the camera TOUCH_LEAD px; at 0.08s the offset is ~85%
+// gone in 150ms — a glide, not a pan. Touch only: on desktop the camera feeds
+// back into the aim angle (see below), so easing it there would make mouse aim
+// chase the cursor instead of tracking it.
+const LEAD_TAU = 0.08;
+const camLead = newLead();
 // where the reticle sits along the aim ray, in world px
 const CROSS_DIST = 200;
 
@@ -78,6 +85,9 @@ const storedT = localStorage.getItem('wz3-touch');
 let touchMode: TouchMode = storedT === 'on' || storedT === 'off' ? storedT : 'auto';
 function applyTouchMode(): void {
   touch.setActive(touchMode === 'on' || (touchMode === 'auto' && touchDefault()));
+  // The ease only runs on the touch branch, so the lead goes stale whenever the
+  // pads are inactive and would apply as a step on the first frame back.
+  camLead.x = 0; camLead.y = 0;
   $('help-kb').classList.toggle('hidden', touch.active);
   $('help-touch').classList.toggle('hidden', !touch.active);
   // these hints name a key that touch players do not have
@@ -399,10 +409,14 @@ function loop(t: number): void {
     // the stick gives an absolute angle (screen and world axes align); the
     // camera pulls the way you are aiming, scaled by how hard you push
     aim = touch.aim;
-    lead = {
-      x: Math.cos(aim) * touch.deflect * TOUCH_LEAD,
-      y: Math.sin(aim) * touch.deflect * TOUCH_LEAD,
-    };
+    // eased, not applied raw: `aim` survives a release but `deflect` does not,
+    // so the raw target steps to zero the instant the thumb lifts
+    lead = tickLead(
+      camLead,
+      Math.cos(aim) * touch.deflect * TOUCH_LEAD,
+      Math.sin(aim) * touch.deflect * TOUCH_LEAD,
+      LEAD_TAU, dt,
+    );
   } else {
     lead = {
       x: ((input.mouse.x - vw / 2) * 0.1) / zoom,
