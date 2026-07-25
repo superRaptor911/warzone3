@@ -232,39 +232,28 @@ check(await page.evaluate(`!document.getElementById('astick').classList.contains
 const at = await page.evaluate<string[]>(`[document.getElementById('astick').style.left, document.getElementById('astick').style.top]`);
 check(at[0] === '640px' && at[1] === '250px', `aim stick centres on the touch point (${at.join(', ')})`);
 
-// Aim-only band: a 20px nudge is past the 13px deadzone (so it steers) but well
-// inside the 36px fire ring, and must not spend a round. This is the complaint
-// the split threshold exists for — one threshold made every nudge a shot.
-const magA = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-await page.touch([{ x: 640, y: 250 }, { x: 660, y: 250 }]);
-await sleep(600); // several fire intervals of the 340rpm pistol
-const magB = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-check(magB === magA, `a nudge inside the fire ring spends no ammo (mag ${magA} -> ${magB})`);
-check(!(await page.evaluate(`document.getElementById('astick').classList.contains('hot')`)),
-  'the stick does not read as firing in the aim-only band');
-await page.release();
+// Auto-fire. There is no fire button on a phone: the gun goes off exactly when
+// the crosshair is on a body, so what a real client has to prove is both halves
+// of that — pointing at nothing cannot pull the trigger, and pointing at
+// something does. The first half is what makes an invisible trigger safe.
+const ring = (n: number, r: number) => Array.from({ length: n }, (_, i) => ({
+  x: 640 + Math.cos((i / n) * Math.PI * 2) * r,
+  y: 250 + Math.sin((i / n) * Math.PI * 2) * r,
+}));
+const magOf = async (): Promise<number> =>
+  Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
 
-// Rounds spent, not elapsed time: a loaded SwiftShader frame rate decides how
-// fast the client can pulse the flag, and this asserts the mechanism works, not
-// that a headless browser hits 60fps.
-const mag0 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-await page.touch([{ x: 640, y: 250 }, { x: 720, y: 250 }]);
-const fired = await page.waitFor(`${mag0} - Number(document.getElementById('mag').textContent) >= 3`, 8000);
-const mag1 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-check(fired, `held stick keeps a semi-auto firing (mag ${mag0} -> ${mag1}; a raw held flag would stop at 1)`);
+// A fresh room opens on a 10s wave break with no zombies alive — the one moment
+// the map is provably empty.
+check(await page.evaluate(`/next wave/.test(document.getElementById('topbar').textContent || '')`),
+  'still in the pre-wave break, so there is nothing alive to shoot at');
+const magA = await magOf();
+await page.touch([{ x: 640, y: 250 }, ...ring(8, 70)]); // full deflection, all the way round
+const hotEmpty = await page.evaluate<boolean>(`document.getElementById('astick').classList.contains('hot')`);
+const magB = await magOf();
+check(magB === magA, `a full-deflection sweep with nothing alive spends no ammo (mag ${magA} -> ${magB})`);
+check(!hotEmpty, 'and the stick never reads as firing');
 await page.release();
-// Settle first. At the moment of release there is reliably one more pulsed
-// fire input already in flight, so the mag drops once more after the thumb is
-// up (measured: mag reads 9 before release and 8 a moment later). Sampling
-// immediately raced that last shot and failed ~30% of the time. A 700ms window
-// still catches fire that genuinely continues — that would spend several
-// rounds, not one.
-await sleep(250);
-const mag2 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-await sleep(700);
-const mag3 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
-check(mag3 === mag2, `releasing the stick stops the fire (${mag2} -> ${mag3})`);
-check(await page.evaluate(`document.getElementById('astick').classList.contains('hidden')`), 'aim stick hides on release');
 
 // sprint toggle: arms on tap, survives standing still, leaks no stamina
 const sp = await page.evaluate<[number, number]>(
@@ -298,6 +287,47 @@ await page.viewport(844, 390, true);
 await sleep(400);
 check(await page.evaluate(`getComputedStyle(document.getElementById('rotate')).display === 'none'`),
   'rotating back clears it');
+
+// ---- auto-fire, live: sweep until rounds actually leave the barrel ----
+// Runs last in this section on purpose: it stands still in the middle of a
+// wave for as long as it takes to make contact, which can leave the player
+// downed. Anything asserted after it would be reading a corpse's HUD.
+//
+// Rounds are counted cumulatively rather than as a single drop, because that
+// doubles as the semi-auto cadence assertion — the pistol is semi-auto and the
+// server edge-detects fire, so a naively held flag would spend exactly one.
+check(await page.waitFor(`/remaining/.test(document.getElementById('topbar').textContent || '')`, 20000),
+  'wave started, so there are zombies to auto-fire at');
+// Latch the ring in the page rather than sampling it per revolution: firing
+// is intermittent (the crosshair crosses a body and leaves it), so a single
+// evaluate per sweep almost always lands in a gap.
+await page.evaluate(`window.__hot = false; (function poll(){
+  if (document.getElementById('astick').classList.contains('hot')) window.__hot = true;
+  requestAnimationFrame(poll);
+})()`);
+let spent = 0;
+let prev = await magOf();
+const budget = Date.now() + 90000;
+while (spent < 3 && Date.now() < budget) {
+  await page.touch([{ x: 640, y: 250 }, ...ring(12, 70)]);
+  const m = await magOf();
+  if (m < prev) spent += prev - m; // a rise is the auto-reload, not a shot
+  prev = m;
+}
+check(spent >= 3, `sweeping onto a zombie fires, and keeps firing (${spent} rounds; a raw held flag would stop at 1)`);
+check(await page.evaluate<boolean>(`window.__hot === true`),
+  'the stick ring lights while the gun is going off');
+await page.release();
+// Settle first. At the moment of release there is reliably one more pulsed
+// fire input already in flight, so the mag drops once more after the thumb is
+// up. A 700ms window still catches fire that genuinely continues — that would
+// spend several rounds, not one.
+await sleep(250);
+const mag2 = await magOf();
+await sleep(700);
+const mag3 = await magOf();
+check(mag3 === mag2, `lifting the thumb is the ceasefire (${mag2} -> ${mag3})`);
+check(await page.evaluate(`document.getElementById('astick').classList.contains('hidden')`), 'aim stick hides on release');
 
 // ---- match lifecycle: a rotate mid-boot, then quit and rejoin ----
 // Two renderer-teardown bugs lived here, and neither one touched the DOM:
@@ -383,26 +413,23 @@ await page.touch([{ x: 200, y: 300 }, { x: 200, y: 200 }]);
 check(await page.evaluate(`document.getElementById('dump').textContent.includes('W')`), 'preview reflects pad input');
 await page.release();
 
-// The aim-only band, read off the live dump: a 20px nudge right of the spawn
-// point is past the deadzone (the angle tracks it) but short of the fire ring.
-// Angle here, ammo in the match above — together they say "aims, does not fire".
-await page.touch([{ x: 640, y: 200 }, { x: 660, y: 200 }]);
+// The deadzone is the whole gate now: inside it the stick steers nothing and
+// holds fire, outside it every deflection both aims and is weapons-free. Angle
+// here, ammo in the match above.
+const engaged = async (): Promise<boolean> => /\bENGAGED\b/.test(await page.evaluate<string>(
+  `[...document.getElementById('dump').querySelectorAll('b')].map(b=>b.textContent).join(' ')`));
+await page.touch([{ x: 640, y: 200 }, { x: 650, y: 200 }]); // 10px: inside the 13px deadzone
+await sleep(200);
+check(!(await engaged()), 'inside the deadzone the stick is disengaged — the ceasefire');
+await page.touch([{ x: 640, y: 200 }, { x: 660, y: 200 }]); // 20px: past it
 await sleep(200);
 const band = await page.evaluate<string>(`document.getElementById('dump').textContent`);
-// the dump always contains the word FIRING (greyed out when off, see flag()),
-// so the firing assertion below reads the <b> elements, not this text
-const aimLine = (band.match(/^aim .*$/m) || [''])[0].replace(/FIRING/, '').trim();
+// the dump always contains the word ENGAGED (greyed out when off, see flag()),
+// so the assertion above reads the <b> elements, not this text
+const aimLine = (band.match(/^aim .*$/m) || [''])[0].replace(/ENGAGED/, '').trim();
 check(/\b0\.0°/.test(aimLine) && /deflect 0\.38/.test(aimLine),
   `a nudge steers the aim (${aimLine})`);
-check(!/\bFIRING\b/.test(await page.evaluate<string>(
-  `[...document.getElementById('dump').querySelectorAll('b')].map(b=>b.textContent).join(' ')`)),
-  'and the preview agrees it is not firing');
-// pushing to the rim crosses FIRE_ON
-await page.touch([{ x: 640, y: 200 }, { x: 700, y: 200 }]);
-await sleep(200);
-check(/\bFIRING\b/.test(await page.evaluate<string>(
-  `[...document.getElementById('dump').querySelectorAll('b')].map(b=>b.textContent).join(' ')`)),
-  'pushing to the rim fires');
+check(await engaged(), 'and the same nudge is already weapons-free — there is no aim-only band left');
 
 // The aim ease, end state only: asserting the transient would race the render
 // loop and go flaky, so this checks the two things that actually break —

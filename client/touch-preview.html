@@ -48,8 +48,7 @@
 <script type="module">
 import { Touch } from '/js/touch.ts';
 import {
-  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, FIRE_OFF, FIRE_ON, STICK_R,
-  newFireCadence, tickFireCadence,
+  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, STICK_R, newFireCadence, tickFireCadence,
 } from '/js/stick.ts';
 import { zoomFor } from '/js/view.ts';
 import { WEAPONS, fireIntervalMs } from '/shared/weapons.ts';
@@ -83,9 +82,11 @@ function frame(t) {
   const armory = touch.consume('armory');
   const w = WEAPONS[ORDER[wi]];
 
-  // the latched gate, same as the game reads — not a threshold compare here,
-  // or the preview would show a different trigger than the one that shoots
-  const held = touch.fire;
+  // Engagement, which is the whole of the fire gate now: past the deadzone the
+  // thumb is steering and the gun fires itself at whatever is under the
+  // crosshair. There are no bodies on this page, so the preview stands in for
+  // the target and shows the cadence a held trigger would produce.
+  const held = touch.deflect >= DEAD_ZONE;
   if (tickFireCadence(cadence, held, w.auto, fireIntervalMs(w) / 1000, dt)) { shots++; shotsWindow++; }
   since += dt;
   if (since >= 1) { rate = shotsWindow / since; shotsWindow = 0; since = 0; }
@@ -99,7 +100,7 @@ function frame(t) {
   errDeg = errDeg - 360 * Math.floor((errDeg + 180) / 360);
   dump.innerHTML =
     `keys      ${flag(k.w, 'W')} ${flag(k.a, 'A')} ${flag(k.s, 'S')} ${flag(k.d, 'D')}\n` +
-    `aim       ${deg}°   deflect ${touch.deflect.toFixed(2)}   ${flag(held, 'FIRING')}\n` +
+    `aim       ${deg}°   deflect ${touch.deflect.toFixed(2)}   ${flag(held, 'ENGAGED')}\n` +
     `raw       ${rawDeg}°   lag ${errDeg.toFixed(1).padStart(6)}°   ` +
     `tau ${(AIM_TAU_NEAR + (AIM_TAU_FAR - AIM_TAU_NEAR) * ((Math.min(1, Math.max(DEAD_ZONE, touch.deflect)) - DEAD_ZONE) / (1 - DEAD_ZONE))).toFixed(3)}s\n` +
     `weapon    ${w.name}  (${w.auto ? 'auto' : 'semi'}, ${w.rpm} rpm = ${(w.rpm / 60).toFixed(1)}/s)\n` +
@@ -109,7 +110,7 @@ function frame(t) {
     `viewport  ${innerWidth}x${innerHeight}  zoom ${zoomFor(innerWidth, innerHeight).toFixed(3)}  ` +
     `--s ${getComputedStyle(document.documentElement).getPropertyValue('--s').trim()}\n` +
     `stick     radius ${STICK_R}px  deadzone ${DEAD_ZONE} (${(DEAD_ZONE * STICK_R).toFixed(0)}px)  ` +
-    `fire ${FIRE_ON}/${FIRE_OFF} (${(FIRE_ON * STICK_R).toFixed(0)}/${(FIRE_OFF * STICK_R).toFixed(0)}px)`;
+    `— past it the whole travel is aim, and the trigger is the crosshair`;
 
   // sector wheel: the 8 buckets stickKeys quantises to, plus the live vector
   const R = 120, cx = 130, cy = 130;
@@ -126,22 +127,12 @@ function frame(t) {
     ctx.strokeStyle = 'rgba(90,105,130,.35)';
     ctx.stroke();
   }
+  // one ring, and it is the ceasefire line: inside it the thumb steers nothing
+  // and the gun holds fire, outside it every deflection both aims and shoots
   ctx.beginPath();
   ctx.arc(cx, cy, R * DEAD_ZONE, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(232,72,63,.7)';
+  ctx.strokeStyle = held ? 'rgba(255,120,110,.95)' : 'rgba(232,72,63,.7)';
   ctx.stroke();
-  // the two fire thresholds: cross the outer one to start firing, fall inside
-  // the dashed inner one to stop (the hysteresis band is the gap between them)
-  ctx.beginPath();
-  ctx.arc(cx, cy, R * FIRE_ON, 0, Math.PI * 2);
-  ctx.strokeStyle = touch.fire ? 'rgba(255,120,110,.95)' : 'rgba(232,72,63,.5)';
-  ctx.stroke();
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.arc(cx, cy, R * FIRE_OFF, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(232,72,63,.35)';
-  ctx.stroke();
-  ctx.setLineDash([]);
   if (touch.deflect > 0) {
     // thin grey = where the thumb points, solid red = the eased aim the game
     // uses; the gap between them IS the latency this filter costs

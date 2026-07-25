@@ -10,12 +10,11 @@ import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
 import {
-  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, FIRE_OFF, FIRE_ON, STICK_R, deflection, newAimSmooth,
-  newFireCadence, newFireGate, newLead, releaseAim, stickKeys, tickAimSmooth, tickFireCadence,
-  tickFireGate, tickLead,
+  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, STICK_R, deflection, newAimSmooth,
+  newFireCadence, newLead, releaseAim, stickKeys, tickAimSmooth, tickFireCadence, tickLead,
 } from '../client/js/stick.ts';
 import {
-  ASSIST_CONE, ASSIST_MAX_PULL, newAssist, releaseAssist, tickAimAssist,
+  ASSIST_CONE, ASSIST_MAX_PULL, newAssist, onTarget, releaseAssist, tickAimAssist,
 } from '../client/js/assist.ts';
 import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
 import { CONFIRM_GRACE, cancelReload, newReloadMirror, startReload, tickReload } from '../client/js/reload.ts';
@@ -490,49 +489,71 @@ console.log('\ntouch fire cadence');
   check(tickFireCadence(st2, true, false, 1, dt), 'a fresh press fires immediately after release');
 }
 
-// ---- touch: aim-vs-fire gate ----
-// The right thumb aims AND fires, so the two have to be separable: inner travel
-// turns you, the outer ring shoots. One shared threshold made every nudge a shot.
-console.log('\ntouch fire gate');
+// ---- touch: the auto-fire trigger ----
+// There is no fire button on a phone, so the gun goes off exactly when the
+// crosshair is on a body. The threshold is derived rather than tuned — the
+// target's own angular half-width plus the weapon's effective spread — so it
+// tracks distance, the radii in shared/constants.ts, and bloom for free.
+console.log('\ntouch auto-fire trigger');
 {
-  // aiming without firing is the whole point of the split
-  const g = newFireGate();
-  let firedWhileAiming = false;
-  for (const d of [DEAD_ZONE, 0.3, 0.4, 0.5, 0.6, FIRE_ON - 0.01]) {
-    if (tickFireGate(g, d)) firedWhileAiming = true;
-  }
-  check(!firedWhileAiming,
-    `the stick steers up to ${FIRE_ON} of travel without firing (${(DEAD_ZONE * STICK_R).toFixed(0)}..${(FIRE_ON * STICK_R).toFixed(0)}px)`);
-  // ...and the aim itself is still live in there — that band is above DEAD_ZONE,
-  // which is what touch.ts gates the angle update on
-  check(FIRE_ON > DEAD_ZONE + 0.2, `the aim-only band is wide, not a sliver (${DEAD_ZONE}..${FIRE_ON})`);
+  const DEG = Math.PI / 180;
+  const g = new Grid(140, 140);
+  const me = { x: g.pxW() / 2, y: g.pxH() / 2 };
+  // aim due east; a target `offDeg` off that is `offDeg` of error
+  const at = (dist: number, offDeg: number, radius = PLAYER_RADIUS) => ({
+    x: me.x + Math.cos(offDeg * DEG) * dist,
+    y: me.y + Math.sin(offDeg * DEG) * dist,
+    radius,
+  });
+  // the real pipeline: assist picks and pulls, then the trigger reads its pick
+  const fires = (dist: number, offDeg: number, spread = 0, radius = PLAYER_RADIUS) => {
+    const st = newAssist();
+    const aim = tickAimAssist(st, 0, me.x, me.y, [at(dist, offDeg, radius)], 2000, g);
+    return onTarget(st, aim, spread);
+  };
 
-  // reaching the ring fires
-  check(tickFireGate(g, FIRE_ON), 'pushing to the outer ring fires');
-  check(tickFireGate(g, 1), 'and full deflection keeps firing');
+  // 1. the headline: a wobble the player cannot remove still fires, because the
+  // assist pulls it inside the body first
+  check(fires(800, 2), 'a 2deg wobble at rifle range fires (the assist pulls it on)');
+  check(fires(1800, 2), 'and at sniper range, where the target is 1.1deg wide');
 
-  // hysteresis: once committed, wobble below FIRE_ON must not stutter the flag.
-  // A flickering flag is worse than either state — semi-autos are pulsed at
-  // their fire interval, so it reads as the gun going off at random.
-  const h = newFireGate();
-  tickFireGate(h, 1);
-  let stutter = false;
-  for (const d of [FIRE_ON - 0.02, FIRE_ON + 0.02, FIRE_OFF + 0.01]) {
-    if (!tickFireGate(h, d)) stutter = true;
-  }
-  check(!stutter, `fire latches through wobble down to ${FIRE_OFF}`);
-  check(!tickFireGate(h, FIRE_OFF - 0.01), 'pulling back inside the release ring stops the fire');
-  // and it releases well before the thumb reaches the aim deadzone, so there is
-  // no deflection that both aims and cannot stop shooting
-  check(FIRE_OFF > DEAD_ZONE, `the release ring sits outside the deadzone (${FIRE_OFF} > ${DEAD_ZONE})`);
+  // 2. pointing somewhere else does not. 10deg is inside the assist cone, so
+  // this is the trigger refusing, not the assist failing to find a target.
+  check(!fires(800, 10), 'pointing 10deg off an 800px target does not fire');
+  check(10 < ASSIST_CONE / DEG, 'and that 10deg is inside the assist cone, so it is the trigger refusing');
+  check(!fires(1800, 4), 'nor 4deg off at sniper range');
 
-  // lifting the thumb reports 0 — this is what stops the fire on release
-  const r = newFireGate();
-  tickFireGate(r, 1);
-  check(!tickFireGate(r, 0), 'a lifted thumb always releases');
+  // 3. scale: a body 150px away fills 6.5deg either side of its centre, so an
+  // error that misses at range is a hit here. Nothing per-weapon says so —
+  // atan2 does, off the radius in shared/constants.ts.
+  const half150 = Math.atan2(PLAYER_RADIUS, 150) / DEG;
+  check(fires(150, 5), `at 150px a 5deg error is still on the body (half-width ${half150.toFixed(1)}deg)`);
+  check(!fires(150, 8), 'and 8deg is off it, even that close');
+  check(!fires(800, 5), 'while the 5deg that hit up close misses the same body at 800px');
 
-  // the band has to be a real gap, or the latch does nothing
-  check(FIRE_OFF < FIRE_ON, 'the release threshold is below the fire threshold');
+  // 4. no target, no shot. This is the whole reason the trigger can be
+  // invisible: the gun cannot fire at nothing, so there is nothing to hold.
+  const empty = newAssist();
+  check(!onTarget(empty, 0, 0), 'a fresh assist with no target never fires');
+  const stale = newAssist();
+  tickAimAssist(stale, 0, me.x, me.y, [at(800, 0)], 2000, g);
+  releaseAssist(stale);
+  check(!onTarget(stale, 0, 0), 'and releasing the stick disarms the remembered target');
+
+  // 5. spread widens the gate, because at full bloom the rounds really do go
+  // that wide. The shotgun is the case this exists for: its pellets cover the
+  // arc, so a body inside it is a body it hits.
+  const shotgun = WEAPONS.shotgun;
+  check(fires(300, 5, shotgun.baseSpread), `a shotgun fires 5deg off at 300px (its pellets span ${(shotgun.baseSpread / DEG).toFixed(1)}deg)`);
+  check(!fires(300, 5, WEAPONS.sniper.baseSpread), 'a sniper at the same angle does not');
+
+  // 6. the gate is exactly the target half-width plus spread, checked at the
+  // boundary from both sides — an off-by-one here is a gun that fires early
+  const d = 800, half = Math.atan2(PLAYER_RADIUS, d);
+  const on = newAssist();
+  tickAimAssist(on, 0, me.x, me.y, [at(d, 0)], 2000, g);
+  check(onTarget(on, -half * 0.99, 0), 'just inside the target edge fires');
+  check(!onTarget(on, -half * 1.01, 0), 'and just outside it does not');
 }
 
 // ---- touch: radius-scaled aim easing ----

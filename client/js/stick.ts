@@ -9,41 +9,15 @@ import type { MoveKeys } from '../../shared/types.ts';
 /** Screen px from a stick's origin to full deflection. */
 export const STICK_R = 52;
 
-/** Fraction of STICK_R below which a stick reads as centred. */
-export const DEAD_ZONE = 0.25;
-
 /**
- * Fire thresholds for the aim stick, well above DEAD_ZONE on purpose: the two
- * jobs the right thumb does are separate. Inside FIRE_ON the stick only turns
- * you — line a shot up, track a runner, check a corner — and firing starts at
- * the outer ring, which the thumb has to reach for deliberately. A single
- * threshold made every nudge a shot, so aiming without firing was impossible.
+ * Fraction of STICK_R below which a stick reads as centred.
  *
- * FIRE_OFF is lower than FIRE_ON (hysteresis, ~15% of travel). Without the gap
- * a thumb resting near the boundary flickers the flag every frame, and since
- * semi-autos are pulsed at their fire interval that reads as the gun going off
- * at random. Latching means "committed to fire" survives small wobble, while a
- * genuine pull back to aiming still releases well before the deadzone.
+ * On the aim stick this is also the ceasefire: past it the thumb steers and the
+ * gun fires itself at whatever it is pointed at (`onTarget` in assist.ts), and
+ * lifting the thumb is how you choose not to shoot. There is no fire ring any
+ * more — the stick's whole travel is aim.
  */
-export const FIRE_ON = 0.7;
-export const FIRE_OFF = 0.55;
-
-/** Mutable state for tickFireGate; one per client. */
-export interface FireGate { on: boolean }
-
-export function newFireGate(): FireGate {
-  return { on: false };
-}
-
-/**
- * Latching threshold: does this aim-stick deflection mean "fire"? Deflection
- * alone decides, so this is safe to call from a pointer event rather than a
- * frame (no dt, no wall clock). A lifted thumb reports 0 and always releases.
- */
-export function tickFireGate(st: FireGate, deflect: number): boolean {
-  st.on = deflect >= (st.on ? FIRE_OFF : FIRE_ON);
-  return st.on;
-}
+export const DEAD_ZONE = 0.25;
 
 /**
  * Aim easing time constants, at DEAD_ZONE and at the rim, linear between.

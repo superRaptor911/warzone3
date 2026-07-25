@@ -11,7 +11,7 @@ import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
 import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
-import { newAssist, releaseAssist, tickAimAssist } from './assist.ts';
+import { newAssist, onTarget, releaseAssist, tickAimAssist } from './assist.ts';
 import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
 import type { GameEvent, GameMode, InputMsg, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
@@ -451,6 +451,26 @@ function loop(t: number): void {
   // both want the same thing, the targets as they currently *appear*.
   const targets = tracerTargets(interp, meSnap);
 
+  // --- movement keys ---
+  // Read before the aim block, not after: the touch trigger needs the effective
+  // spread and that depends on whether we are moving. Both sources are read
+  // whenever the pads are up, so a phone with a bluetooth keyboard still works.
+  const kb = input.moveKeys();
+  const keys = touch.active
+    ? {
+      w: kb.w || touch.keys.w ? 1 : 0, a: kb.a || touch.keys.a ? 1 : 0,
+      s: kb.s || touch.keys.s ? 1 : 0, d: kb.d || touch.keys.d ? 1 : 0,
+    }
+    : kb;
+  const moving = !!(keys.w || keys.a || keys.s || keys.d);
+  // Effective spread, resolved once and used by all three consumers that used
+  // to compute it separately: the touch trigger, the crosshair and the local
+  // gun mirror. Mirrors Room.effSpread on the server.
+  const effSpread = Math.min(
+    (w.baseSpread + gun.spread) * (moving ? w.moveSpreadMult : 1),
+    w.maxSpread,
+  );
+
   // --- aim ---
   // Screen sizes are CSS px (autoDensity); `zoom` is world px per screen px and
   // is 1 on any desktop-sized viewport, so this is the original math there.
@@ -458,6 +478,9 @@ function loop(t: number): void {
   const vw = renderer.screenW, vh = renderer.screenH;
   let aim: number;
   let lead: Vec2;
+  // Touch has no fire button: the gun goes off when the crosshair is on a body
+  // (resolved in the aim block below, where the assist has just picked one).
+  let autoFire = false;
   if (touch.active) {
     // the stick gives an absolute angle (screen and world axes align); the
     // camera pulls the way you are aiming, scaled by how hard you push
@@ -468,8 +491,13 @@ function loop(t: number): void {
     // pads there is nothing to assist, and a pull would drift the crosshair
     // while merely running. Applied here so the camera, the reticle, the body
     // and the wire message all agree on one angle.
+    // The same engagement gates the trigger: thumb on the pad is weapons free,
+    // lifting it is the ceasefire. That is the whole of the fire control now —
+    // and it means we never fire at a target the assist wasn't allowed to help
+    // with (out of range, or behind a wall).
     if (touch.deflect >= DEAD_ZONE) {
       aim = tickAimAssist(assist, aim, mePos.x, mePos.y, targets, w.range, grid);
+      autoFire = onTarget(assist, aim, effSpread);
     } else {
       releaseAssist(assist);
     }
@@ -498,24 +526,12 @@ function loop(t: number): void {
   }
 
   // --- build + send input ---
-  // Both sources are read whenever the pads are up, so a phone with a
-  // bluetooth keyboard still works.
-  const kb = input.moveKeys();
-  const keys = touch.active
-    ? {
-      w: kb.w || touch.keys.w ? 1 : 0, a: kb.a || touch.keys.a ? 1 : 0,
-      s: kb.s || touch.keys.s ? 1 : 0, d: kb.d || touch.keys.d ? 1 : 0,
-    }
-    : kb;
-  const moving = !!(keys.w || keys.a || keys.s || keys.d);
   // The touch SPRINT button is a toggle, so it must not leak stamina: tickSprint
   // drains whenever the flag is set, moving or not. Gate the wire flag on
   // movement instead of clearing the toggle — clearing it made a pre-emptive tap
   // (arm sprint, then run) impossible, since the cancel fired the same frame.
   const sprint = touch.active ? (touch.sprint && moving) : !!input.keys['shift'];
-  // touch: the stick fires only in its outer ring (touch.fire), so the inner
-  // travel is aim-only — a nudge to line up a shot is not a shot.
-  const held = (touch.active ? touch.fire : input.mouse.down)
+  const held = (touch.active ? autoFire : input.mouse.down)
     && !hud.buyOpen && !hud.pauseOpen && alive && inputAllowed;
   // A held flag fires a semi-auto exactly once (server-side firePrev), so on
   // touch the flag is pulsed at the weapon's fire interval instead.
@@ -559,13 +575,10 @@ function loop(t: number): void {
   if (firing && gun.cd <= 0 && !fireBlocked && magNow > 0 && (w.auto || freshClick)) {
     gun.cd = fireIntervalMs(w) / 1000;
     gun.sinceShot = 0;
-    let spr = (w.baseSpread + gun.spread);
-    if (keys.w || keys.a || keys.s || keys.d) spr *= w.moveSpreadMult;
-    spr = Math.min(spr, w.maxSpread);
     const tip = renderer.gunTip(mePos.x, mePos.y, aim, wid);
     fx.muzzle(tip.x, tip.y, aim);
     for (let i = 0; i < w.pellets; i++) {
-      const a = aim + (Math.random() * 2 - 1) * spr;
+      const a = aim + (Math.random() * 2 - 1) * effSpread;
       const dx = Math.cos(a), dy = Math.sin(a);
       const { dist: d } = castPellet(grid, mePos.x, mePos.y, dx, dy, w.range, targets);
       fx.tracer(mePos.x, mePos.y, mePos.x + dx * d, mePos.y + dy * d, wid);
@@ -575,6 +588,10 @@ function loop(t: number): void {
     gun.spread = Math.min(gun.spread + w.bloom, w.maxSpread);
   }
   gun.wasDown = firing;
+  // The ring is the only tell that the invisible trigger is pulled, so it has
+  // to mean "rounds are leaving the barrel" — not merely "on target". An empty
+  // mag or a reload goes dark, which is exactly when the player is asking.
+  if (touch.active) touch.setFiring(held && !fireBlocked && magNow > 0);
 
   // --- edge-triggered controls ---
   const tapReload = touch.active && touch.consume('reload');
@@ -644,8 +661,6 @@ function loop(t: number): void {
   fx.update(dt);
   const sh = fx.shakeOffset();
   const cam = { x: baseCam.x + sh.x, y: baseCam.y + sh.y };
-  let spreadShown = w.baseSpread + gun.spread;
-  if (keys.w || keys.a || keys.s || keys.d) spreadShown *= w.moveSpreadMult;
   // no cursor on touch: park the reticle a fixed world distance along the aim ray
   const crosshair = touch.active
     ? {
@@ -658,7 +673,7 @@ function loop(t: number): void {
     me: { x: mePos.x, y: mePos.y, aim },
     players: interp.players,
     zombies: interp.zombies,
-    fx, spread: Math.min(spreadShown, w.maxSpread),
+    fx, spread: effSpread,
   });
 
   // Only clone while predicting — this runs every frame, and the merge exists

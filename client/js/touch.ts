@@ -11,8 +11,7 @@
 // armory and the topbar still take their own taps.
 
 import {
-  DEAD_ZONE, STICK_R, deflection, newAimSmooth, newFireGate, releaseAim, stickKeys,
-  tickAimSmooth, tickFireGate,
+  DEAD_ZONE, STICK_R, deflection, newAimSmooth, releaseAim, stickKeys, tickAimSmooth,
 } from './stick.ts';
 import type { MoveKeys } from '../../shared/types.ts';
 
@@ -38,21 +37,20 @@ export class Touch {
   aim = 0;
   /** The raw angle the thumb is pointing at, before easing. Exposed for tuning. */
   aimTarget = 0;
-  /** 0..1 aim-stick deflection. Past DEAD_ZONE it steers the aim. */
-  deflect = 0;
   /**
-   * Whether the stick is pushed into the outer fire ring. Latched (see
-   * tickFireGate), so it is not a plain comparison against `deflect` — read
-   * this, never re-derive it, or the hysteresis is lost.
+   * 0..1 aim-stick deflection. Past DEAD_ZONE it steers the aim — and, since
+   * there is no fire ring, that is also the whole of the fire gate: the frame
+   * loop decides whether the gun goes off (`onTarget`), and a thumb below the
+   * deadzone is the ceasefire.
    */
-  fire = false;
+  deflect = 0;
   sprint = false;
   /** A tap landed in the play area this frame (used to cycle spectate targets). */
   tapped = false;
 
   private pressed = new Set<string>();
   private tracks = new Map<number, Track>();
-  private gate = newFireGate();
+  private firing = false;
   private smooth = newAimSmooth();
   private root = $('touch');
   private dpad = $('dpad');
@@ -149,6 +147,19 @@ export class Touch {
     this.sprintBtn.classList.toggle('on', on);
   }
 
+  /**
+   * Light the stick's ring while the gun is actually going off. Driven from the
+   * frame loop, because with no fire ring the decision is the frame loop's:
+   * nothing about the thumb's position says whether a target is under the
+   * crosshair. Without this tell "why am I not shooting" has no answer — the
+   * ring is invisible under the thumb, and the trigger is now invisible too.
+   */
+  setFiring(on: boolean): void {
+    if (on === this.firing) return; // runs every frame; don't thrash classList
+    this.firing = on;
+    this.stick.classList.toggle('hot', on);
+  }
+
   consume(name: string): boolean {
     if (!this.pressed.has(name)) return false;
     this.pressed.delete(name);
@@ -192,12 +203,8 @@ export class Touch {
       this.knob.style.transform = `translate(${(dx / len) * k}px, ${(dy / len) * k}px)`;
     } else {
       this.deflect = 0;
+      this.setFiring(false);
       this.stick.classList.add('hidden');
     }
-    // The fire ring is invisible under the thumb, so the stick has to say which
-    // of its two states it is in — otherwise "why am I not shooting" is a
-    // mystery, and that is the whole risk of splitting the threshold.
-    this.fire = tickFireGate(this.gate, this.deflect);
-    this.stick.classList.toggle('hot', this.fire);
   }
 }

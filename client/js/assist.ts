@@ -55,10 +55,11 @@ export const ASSIST_STICK_BONUS = 0.6;
 export interface Assist {
   a: number;    // world angle of the target the pull last chose
   has: boolean; // ...and whether there was one
+  half: number; // its angular half-width, atan2(radius, distance)
 }
 
 export function newAssist(): Assist {
-  return { a: 0, has: false };
+  return { a: 0, has: false, half: 0 };
 }
 
 /** Forget the current target, so nothing is sticky when aiming resumes. */
@@ -127,9 +128,35 @@ export function tickAimAssist(
   }
   st.a = bestAngle;
   st.has = true;
+  st.half = bestHalf;
   // how much this target needs help: 1 once it is narrower than the wobble,
   // falling toward 0 as it fills the screen
   const need = Math.min(1, ASSIST_NEED / (bestHalf * 2));
   const falloff = 1 - Math.abs(bestErr) / ASSIST_CONE;
   return wrapPi(aim + bestErr * falloff * need);
+}
+
+/**
+ * Does `aim` point at the target the pull just chose closely enough that the
+ * shot would land? This is the touch trigger: there is no fire button, so the
+ * gun goes off exactly when the crosshair is on a body.
+ *
+ * The threshold is derived, not tuned — the target's own angular half-width
+ * (already computed by the pull, so there is no second search) plus the
+ * weapon's effective spread. It therefore scales with distance, with the
+ * entity radii in shared/constants.ts, and with bloom, and it needs no
+ * per-weapon table: a shotgun's pellets genuinely cover their arc, a sniper's
+ * round does not.
+ *
+ * Stateless by design. There is no acquisition delay and no drop-out grace, so
+ * a frame that fails simply does not fire and the next one may; the server's
+ * `fireCd` (and the client's `gun.cd` mirror) still bound the rate to the
+ * weapon's rpm, so flicker cannot outrun a desktop player holding the button.
+ *
+ * Call only when the pull itself ran — with the thumb off the pads `st` holds a
+ * stale target and firing at it would be shooting at a memory.
+ */
+export function onTarget(st: Assist, aim: number, spread: number): boolean {
+  if (!st.has) return false;
+  return Math.abs(wrapPi(st.a - aim)) <= st.half + spread;
 }
