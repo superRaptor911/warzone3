@@ -27,7 +27,8 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
 
-      env: { NODE_ENV: 'production', PORT: 3000 },
+      // Must match proxy_pass in deploy/warzone3.nginx.conf.
+      env: { NODE_ENV: 'production', PORT: 4300 },
 
       // No cwd on purpose: ROOT is derived from import.meta.url, so the server
       // is cwd-independent and this file works at any clone path.
