@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>WARZONE·3</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23e8483f'/><circle cx='8' cy='8' r='3' fill='%230a0c10'/></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%238e2018'/><circle cx='8' cy='8' r='3' fill='%2307090a'/></svg>">
 <link rel="stylesheet" href="/style.css">
 <script type="importmap">
 { "imports": { "pixi.js": "/vendor/pixi.min.mjs", "pixi-filters": "/vendor/pixi-filters.mjs" } }
@@ -14,56 +14,81 @@
 <canvas id="game"></canvas>
 
 <div id="menu" class="overlay">
-  <div class="menu-card">
-    <h1>WARZONE<span>·3</span></h1>
-    <p class="tagline">top-down tactical shooter</p>
-    <input id="name-input" maxlength="16" placeholder="callsign" autocomplete="off">
-    <div class="mode-row">
-      <button class="mode-card" data-mode="zombie">
-        <div class="mode-title">OUTBREAK</div>
-        <div class="mode-desc">co-op zombie survival<br>endless waves &middot; buy weapons</div>
-      </button>
-      <button class="mode-card" data-mode="tdm">
-        <div class="mode-title">5v5 SKIRMISH</div>
-        <div class="mode-desc">team deathmatch<br>first to 40 kills</div>
-      </button>
-    </div>
-    <div id="cp-row" class="hidden">
-      <span id="cp-label"></span>
-      <button id="cp-clear">start fresh</button>
-    </div>
-    <div id="loadout-row">
-      <span class="loadout-label">loadout</span>
-      <div id="loadout-opts">
-        <button data-w="rifle" class="sel">AR-7</button>
-        <button data-w="smg">SMG</button>
-        <button data-w="shotgun">M870</button>
-        <button data-w="sniper">LR-50</button>
+  <div class="menu-card cut">
+    <div class="mc-brand">
+      <h1><span class="t1">WARZONE</span><span class="t2">·3</span></h1>
+      <p class="tagline">top-down tactical shooter</p>
+      <label class="field">
+        <span class="fl">callsign</span>
+        <input id="name-input" maxlength="16" placeholder="unnamed" autocomplete="off">
+      </label>
+      <div id="cp-row" class="hidden">
+        <span id="cp-label"></span>
+        <button id="cp-clear">start fresh</button>
       </div>
     </div>
-    <div id="gfx-row">
-      <span class="loadout-label">graphics</span>
-      <div id="gfx-opts">
-        <button data-q="sharp">SHARP</button>
-        <button data-q="fast">FAST</button>
+
+    <div class="mc-main">
+      <div class="mode-row">
+        <button class="mode-card mc-outbreak cut" data-mode="zombie">
+          <span class="mc-idx">01</span>
+          <span class="mode-title">OUTBREAK</span>
+          <span class="mode-desc">co-op zombie survival<br>endless waves &middot; buy weapons</span>
+          <span class="mc-go">deploy</span>
+        </button>
+        <button class="mode-card mc-skirmish cut" data-mode="tdm">
+          <span class="mc-idx">02</span>
+          <span class="mode-title">5v5 SKIRMISH</span>
+          <span class="mode-desc">team deathmatch<br>first to 40 kills</span>
+          <span class="mc-go">deploy</span>
+        </button>
       </div>
-      <span class="loadout-label">touch</span>
-      <div id="touch-opts">
-        <button data-t="auto">AUTO</button>
-        <button data-t="on">ON</button>
-        <button data-t="off">OFF</button>
+
+      <div class="settings">
+        <div class="set-row" id="loadout-row">
+          <span class="loadout-label">loadout</span>
+          <div id="loadout-opts">
+            <button data-w="rifle" class="sel">AR-7</button>
+            <button data-w="smg">SMG</button>
+            <button data-w="shotgun">M870</button>
+            <button data-w="sniper">LR-50</button>
+          </div>
+        </div>
+        <div class="set-row" id="gfx-row">
+          <span class="loadout-label">graphics</span>
+          <div id="gfx-opts">
+            <button data-q="sharp">SHARP</button>
+            <button data-q="fast">FAST</button>
+          </div>
+        </div>
+        <div class="set-row" id="touch-row">
+          <span class="loadout-label">touch</span>
+          <div id="touch-opts">
+            <button data-t="auto">AUTO</button>
+            <button data-t="on">ON</button>
+            <button data-t="off">OFF</button>
+          </div>
+        </div>
       </div>
     </div>
-    <p class="help" id="help-kb">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Tab scores</p>
-    <p class="help hidden" id="help-touch">left pad moves &middot; right thumb aims and fires &middot; buttons reload, swap and sprint &middot; tap the score bar for the scoreboard</p>
-    <p id="conn-status"></p>
+
+    <div class="mc-foot">
+      <p class="help" id="help-kb">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Esc pause &middot; Tab scores</p>
+      <p class="help hidden" id="help-touch">left pad moves &middot; right thumb aims and fires &middot; buttons reload, swap and sprint &middot; tap the score bar for the scoreboard</p>
+      <p id="conn-status"></p>
+    </div>
   </div>
 </div>
 
 <div id="hud" class="hidden">
-  <div id="topbar"></div>
+  <div id="topbar" class="cut"></div>
   <div id="banner"></div>
-  <div id="perf"><span id="perf-fps"></span><span id="perf-ping"></span></div>
+  <!-- pause control shares the top-right strip with the perf readout: the only
+       band of the touch HUD that is not under a thumb or claimed by gameplay -->
+  <div id="topright">
+    <button id="pausebtn" aria-label="pause">&#8214;</button>
+    <div id="perf"><span id="perf-fps"></span><span id="perf-ping"></span></div>
+  </div>
   <div id="killfeed"></div>
 
   <div id="bottom-left">
@@ -83,13 +108,35 @@
 
   <div id="botbar"></div>
 
-  <div id="buymenu" class="hidden">
-    <h3>ARMORY <span class="bm-pts"></span></h3>
+  <div id="buymenu" class="hidden cut">
+    <h3><span class="bm-t">ARMORY</span><span class="bm-pts"></span><button id="bm-close" aria-label="close">&times;</button></h3>
     <div id="buy-items"></div>
-    <p class="help">click or press number &middot; B to close</p>
+    <p class="help kbd-only">click or press number &middot; B to close</p>
   </div>
 
-  <div id="scoreboard" class="hidden"></div>
+  <!-- Pause is a centred panel, never a full-screen backdrop: #touch sits BELOW
+       #hud, so anything covering the screen here would swallow the pads. The
+       world stays live underneath — this gates firing only. -->
+  <div id="pause" class="hidden cut">
+    <h3>PAUSED</h3>
+    <div id="pz-main">
+      <p class="pz-note">the match is still running</p>
+      <div class="pz-btns">
+        <button id="pz-resume" class="pz-go">RESUME</button>
+        <button id="pz-quit">QUIT TO MENU</button>
+      </div>
+    </div>
+    <div id="pz-confirm" class="hidden">
+      <p class="pz-note">leave the match? your squad keeps fighting.</p>
+      <div class="pz-btns">
+        <button id="pz-no" class="pz-go">STAY</button>
+        <button id="pz-yes" class="pz-bad">QUIT</button>
+      </div>
+    </div>
+    <p class="help kbd-only">Esc to resume</p>
+  </div>
+
+  <div id="scoreboard" class="hidden cut"></div>
   <div id="center-msg" class="hidden"></div>
   <div id="vignette"></div>
   <div id="hitflash"></div>
@@ -114,7 +161,7 @@
   </div>
 </div>
 
-<div id="rotate"><div><span class="rot-icon">⟳</span>ROTATE TO PLAY</div></div>
+<div id="rotate"><div><span class="rot-icon">&#10227;</span>ROTATE TO PLAY</div></div>
 
 <script type="module" src="/js/main.ts"></script>
 </body>

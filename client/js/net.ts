@@ -15,10 +15,17 @@ export class Net {
   // "— ms" on a link that was in fact working perfectly.
   ping = -1;
   nextPingAt = 0;    // perf-clock time of the next probe
+  /**
+   * Set by quit(). Without it an intentional exit reports "Could not connect":
+   * closing the socket clears `connected` before `onclose` runs, which is
+   * exactly the state a failed dial leaves behind.
+   */
+  quitting = false;
 
   connect(joinMsg: object): void {
     this.ping = -1;
     this.nextPingAt = 0;
+    this.quitting = false;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${proto}//${location.host}`);
     this.ws.onopen = () => {
@@ -41,7 +48,10 @@ export class Net {
       } else if (m.t === 'full') { this.connected = false; this.onClose?.('Room is full'); }
     };
     this.ws.onclose = () => {
-      if (this.connected) { this.connected = false; this.onClose?.('Disconnected from server'); }
+      const was = this.connected;
+      this.connected = false;
+      if (this.quitting) this.onClose?.('');   // we left on purpose; say nothing
+      else if (was) this.onClose?.('Disconnected from server');
       else this.onClose?.('Could not connect');
     };
     this.ws.onerror = () => {};
@@ -65,5 +75,9 @@ export class Net {
     this.send({ t: 'ping', ts: performance.now() });
   }
 
-  close(): void { this.connected = false; this.ws?.close(); }
+  /**
+   * Leave on purpose. The server's own `close` handler frees the slot and emits
+   * the `leave` event, so there is nothing to send first.
+   */
+  quit(): void { this.quitting = true; this.ws?.close(); }
 }

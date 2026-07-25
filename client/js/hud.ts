@@ -1,4 +1,4 @@
-import { SHOP, TEAM, STAMINA_MIN_TO_SPRINT, type ShopItemId } from '../../shared/constants.ts';
+import { PLAYER_HP, SHOP, TEAM, STAMINA_MIN_TO_SPRINT, type ShopItemId } from '../../shared/constants.ts';
 import { WEAPONS, type WeaponId } from '../../shared/weapons.ts';
 import { weaponIconDataUrl } from './gfx/art.ts';
 import type { GameMode, PlayerSnap, SelfSnap, Snapshot } from '../../shared/types.ts';
@@ -28,12 +28,19 @@ export interface HudHandlers {
   onAddBot: (team: 'mine' | 'enemy') => void;
   onRemoveBot: (team: 'mine' | 'enemy') => void;
   onBuy: (item: ShopItemId) => void;
+  onQuit: () => void;
 }
 
 export class Hud {
   mode: GameMode;
   onBuy: (item: ShopItemId) => void;
   buyOpen: boolean;
+  /**
+   * Pause overlay. Gates firing only (see `held` in main.ts) — the world keeps
+   * running underneath, so movement has to stay available or pausing in the
+   * middle of a wave would be a death sentence.
+   */
+  pauseOpen = false;
   bannerT: ReturnType<typeof setTimeout> | undefined;
   shopHintDone = false; // set on first purchase; retires the armory hints
   slotSig = '';         // last-rendered weapon-slot signature, see update()
@@ -42,7 +49,7 @@ export class Hud {
   perfPing = NaN;       // NaN, not -1: -1 is a real ping value ("no pong yet")
   centerHtml: string | null = null; // last-rendered centre overlay, see centerMsg()
 
-  constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy }: HudHandlers) {
+  constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy, onQuit }: HudHandlers) {
     this.mode = mode;
     this.onBuy = onBuy;
     this.buyOpen = false;
@@ -50,6 +57,16 @@ export class Hud {
     $('hud').classList.remove('hidden');
     $('menu').classList.add('hidden');
     if (mode === 'zombie') $('points').classList.remove('hidden');
+
+    // pause overlay. A Hud is built per welcome, so the panel is reset here
+    // rather than trusting whatever state the last match left it in.
+    this.togglePause(false);
+    $('pausebtn').onclick = (e) => { e.preventDefault(); this.togglePause(); };
+    $('pz-resume').onclick = (e) => { e.preventDefault(); this.togglePause(false); };
+    $('pz-quit').onclick = (e) => { e.preventDefault(); this.confirmQuit(true); };
+    $('pz-no').onclick = (e) => { e.preventDefault(); this.confirmQuit(false); };
+    $('pz-yes').onclick = (e) => { e.preventDefault(); onQuit(); };
+    $('bm-close').onclick = (e) => { e.preventDefault(); this.toggleBuy(false); };
 
     // bot buttons. On touch the list collapses behind a single toggle: at
     // right/50% the expanded stack sits exactly under the aim thumb.
@@ -90,7 +107,11 @@ export class Hud {
       const ico = isWeapon ? weaponIconHtml(item.key as WeaponId) : '';
       row.innerHTML = `<span><span class="num">${i + 1}</span>${ico}${item.label}</span>` +
         `<span class="cost">$${SHOP[item.key].cost}</span>`;
-      row.onclick = () => onBuy(item.key);
+      // pointerdown, not click: the tap that opens the armory also emits a
+      // compatibility `click` a few ms later, at the same screen point — by
+      // which time this panel has appeared under the finger. On a phone that
+      // bought whatever row happened to land there.
+      row.addEventListener('pointerdown', (e) => { e.preventDefault(); onBuy(item.key); });
       list.appendChild(row);
     });
   }
@@ -99,6 +120,19 @@ export class Hud {
     if (this.mode !== 'zombie') return;
     this.buyOpen = force !== undefined ? force : !this.buyOpen;
     $('buymenu').classList.toggle('hidden', !this.buyOpen);
+  }
+
+  togglePause(force?: boolean): void {
+    this.pauseOpen = force !== undefined ? force : !this.pauseOpen;
+    $('pause').classList.toggle('hidden', !this.pauseOpen);
+    if (this.pauseOpen) this.toggleBuy(false); // never stack the two panels
+    else this.confirmQuit(false);              // reopening always starts on RESUME
+  }
+
+  /** Swaps the pause panel between its menu and its "really leave?" state. */
+  confirmQuit(on: boolean): void {
+    $('pz-main').classList.toggle('hidden', on);
+    $('pz-confirm').classList.toggle('hidden', !on);
   }
 
   update(snap: Snapshot, self: SelfSnap | null, myId: number, stamina = 100): void {
@@ -158,11 +192,18 @@ export class Hud {
     // buy menu affordability
     if (this.buyOpen) {
       document.querySelector('#buymenu .bm-pts')!.textContent = '$' + self.points;
+      // Both classes also kill pointer-events (style.css). That matters now
+      // that the armory closes on a *confirmed* purchase: a row the server
+      // would refuse must not be clickable, or "nothing happened" becomes the
+      // only feedback for four different refusals — broke, already owned,
+      // already at full health (zombie.ts rejects that silently), and downed.
       for (const row of $('buy-items').children) {
         const key = (row as HTMLElement).dataset.key as ShopItemId;
-        const owned = (key !== 'ammo' && key !== 'health') && self.slots.includes(key);
+        const owned = key === 'health'
+          ? me.hp >= PLAYER_HP
+          : key !== 'ammo' && self.slots.includes(key);
         row.classList.toggle('owned', owned);
-        row.classList.toggle('cant', !owned && self.points < SHOP[key].cost);
+        row.classList.toggle('cant', !owned && (!me.alive || self.points < SHOP[key].cost));
       }
     }
   }

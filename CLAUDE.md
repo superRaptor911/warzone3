@@ -96,6 +96,46 @@ Twin-stick: a fixed 8-way dpad on the left half, a floating aim stick on the rig
 - `gfx/decals.ts` — persistent blood stamped into a half-res map-sized RenderTexture (one tiny render pass per stamp, zero per-frame cost); wiped on `matchstart` (TDM restart / zombie squad-wipe — both modes emit it).
 - Bloom (`AdvancedBloomFilter`) applies to the `emissive` container only, toggled invisible on idle frames.
 
+### Panels, pause and leaving a match
+
+The menu and the in-game panels share one token set at the top of `style.css`
+(surfaces, edges, the `.cut` chamfer, type stacks). **Semantic colours stay out
+of it** — team red/blue, health green, points gold, damage red mean something,
+and must not drift when the art direction does. In-game panels take the palette
+and the cut edges only: no grain, no decorative vignette, because `#vignette`
+is already the damage indicator.
+
+- `.cut` draws its edge as the element's own background and its fill as an
+  inset `::before` wearing the same `clip-path` — `clip-path` does not clip a
+  `border` onto the diagonal. That is why `.cut > *` lifts content above the
+  pseudo-element; **a bare text node inside a `.cut` would be painted over**.
+- **Pause gates firing only** (`hud.pauseOpen` joins `hud.buyOpen` in `held`,
+  `main.ts`). It is a centred panel, never a full-screen backdrop: `#touch` is
+  at z-index 9 *below* `#hud`, so anything covering the screen swallows the
+  pads — and this is authoritative multiplayer, so a player frozen mid-wave is
+  a player being eaten. Esc falls through the armory first and only then
+  reaches pause.
+- **Quitting sets `net.quitting` before closing the socket.** Closing clears
+  `connected` before `onclose` runs, which is indistinguishable from a failed
+  dial — without the flag a deliberate exit reports "Could not connect". A
+  reason of `''` means "left on purpose"; `undefined` means a caller forgot.
+- **The armory closes on the server's `buy` event, never on the click.**
+  `ZombieRoom.buy` refuses for four reasons (broke, weapon owned, already at
+  full health, downed) and emits nothing in any of them, so a panel that shuts
+  can only mean the purchase landed. The flip side: silence now *means*
+  refusal, so `hud.update` marks all four states `.cant`/`.owned`, and those
+  classes carry `pointer-events: none` — an unbuyable row must not be
+  clickable.
+- **Buy rows listen on `pointerdown`, not `click`.** The tap that opens the
+  armory emits a compatibility `click` milliseconds later at the same point, by
+  which time the panel is under the finger: on a phone that bought whatever row
+  landed there.
+- **On touch the armory and scoreboard are top-anchored, not centred.** A
+  landscape phone is ~390px tall; centred, each panel covers the very control
+  that toggles it (the ARMORY button, the score bar). Sizes in the
+  `body.touch` panel rules are deliberately *not* multiplied by `--s`: 44px is
+  a tap-target floor, not decoration to scale down.
+
 ### Gotchas
 
 - Weapon spread bloom only decays after `SPREAD_DECAY_DELAY` (0.25s) since the last shot (`server/room.ts`); a plain per-tick decay lets high-RPM weapons out-recover their own bloom. The client mirrors this in `main.ts` for the crosshair.

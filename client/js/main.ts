@@ -200,9 +200,21 @@ net.onClose = (reason) => {
   if (wakeLock) { void wakeLock.release().catch(() => {}); wakeLock = null; }
   $('hud').classList.add('hidden');
   $('menu').classList.remove('hidden');
-  $('conn-status').textContent = reason || 'disconnected';
+  // '' is a deliberate quit and has nothing to report; undefined would be a
+  // caller that forgot to say why.
+  $('conn-status').textContent = reason ?? 'disconnected';
   refreshCpRow();
 };
+
+// Leave the match. The socket close is the whole of it: the server frees the
+// slot and announces the departure, and onClose above puts the menu back and
+// releases the wake lock. OUTBREAK progress needs no saving here — the
+// checkpoint is written from snapshots as the waves are cleared.
+function quitToMenu(): void {
+  hud.togglePause(false);
+  hud.toggleBuy(false);
+  net.quit();
+}
 
 net.onWelcome = (m) => {
   running = false;
@@ -214,6 +226,7 @@ net.onWelcome = (m) => {
     onAddBot: (team) => net.send({ t: 'addBot', team }),
     onRemoveBot: (team) => net.send({ t: 'removeBot', team }),
     onBuy: (item) => net.send({ t: 'buy', item }),
+    onQuit: quitToMenu,
   });
   touch.showArmory(mode === 'zombie'); // mirrors the desktop B key
   scoresOpen = false;
@@ -318,7 +331,10 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
       if (renderer) renderer.resetDecals(); // world reset — wipe accumulated gore
       break;
     case 'buy':
-      if (e.id === myId) { audio.cash(); hud.shopHintDone = true; }
+      // Close on the *server's* confirmation, not on the click: the shop
+      // rejects a purchase for four reasons and none of them emits this event,
+      // so a menu that shuts can only mean the buy landed.
+      if (e.id === myId) { audio.cash(); hud.shopHintDone = true; hud.toggleBuy(false); }
       break;
     case 'revive':
       if (e.id === myId) hud.banner('BACK IN THE FIGHT', 2000);
@@ -477,7 +493,7 @@ function loop(t: number): void {
   // touch: the stick fires only in its outer ring (touch.fire), so the inner
   // travel is aim-only — a nudge to line up a shot is not a shot.
   const held = (touch.active ? touch.fire : input.mouse.down)
-    && !hud.buyOpen && alive && inputAllowed;
+    && !hud.buyOpen && !hud.pauseOpen && alive && inputAllowed;
   // A held flag fires a semi-auto exactly once (server-side firePrev), so on
   // touch the flag is pulsed at the weapon's fire interval instead.
   const firing = touch.active
@@ -546,8 +562,14 @@ function loop(t: number): void {
     audio.click(0.2);
     startReload(reloadPred, wid, self.ammo[self.slot]);
   }
-  if (input.consume('b') || tapArmory) hud.toggleBuy();
-  if (input.consume('escape')) hud.toggleBuy(false);
+  if ((input.consume('b') || tapArmory) && !hud.pauseOpen) hud.toggleBuy();
+  // Esc falls through: it dismisses the armory if that is what is open, and
+  // only otherwise reaches the pause overlay. (In browser fullscreen the same
+  // keypress also drops fullscreen — nothing can be done about that.)
+  if (input.consume('escape')) {
+    if (hud.buyOpen) hud.toggleBuy(false);
+    else hud.togglePause();
+  }
   if (tapSwap && alive && self.slots.length > 1) {
     net.send({ t: 'slot', i: (self.slot + 1) % self.slots.length });
   }
