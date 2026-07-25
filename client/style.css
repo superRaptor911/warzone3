@@ -220,6 +220,14 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: #dde3ea; user-sele
 body.touch #game { cursor: none; }
 body.touch #topbar { pointer-events: auto; }          /* tap to toggle the scoreboard */
 body.touch #botbar { top: 28%; transform: none; }     /* out of the aim-thumb arc */
+/* The bottom-left corner belongs to the dpad, so the left side stacks into three
+   non-overlapping bands: minimap (16..100), health/stamina/points (108..150),
+   then the pad in the corner with its buttons beside it rather than above. */
+body.touch #bottom-left { left: 16px; bottom: auto; top: 108px; }
+body.touch #tbtns-left { left: calc(180px + env(safe-area-inset-left)); bottom: calc(26px + env(safe-area-inset-bottom)); }
+/* these name keys a touch player does not have, and both now have real buttons
+   a thumb's width away */
+body.touch #shophint, body.touch #reloadhint { display: none; }
 .bb-toggle { display: none; }
 body.touch .bb-toggle { display: block; }
 body.touch #botbar .bb-list { display: none; flex-direction: column; gap: 6px; margin-top: 6px; }
