@@ -4,6 +4,7 @@ import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
 import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS } from '../shared/constants.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
+import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
 
 let failures = 0;
 function check(cond: unknown, msg: string): void {
@@ -188,6 +189,28 @@ console.log('hitscan');
   ]);
   check(nearest.hit === body, 'nearest body wins');
   room.destroy();
+}
+
+// ---- viewport: zoom + quality tier ----
+console.log('\nviewport math');
+{
+  check(zoomFor(1920, 1080) === 1, 'desktop 1920x1080 renders at zoom 1 (unchanged)');
+  check(zoomFor(1366, 768) === 1, 'small laptop still zoom 1');
+  check(zoomFor(VIEW_TARGET_W, 9999) === 1, 'exactly the target width is the zoom-1 boundary');
+  check(zoomFor(3440, 1440) === 1, 'never zooms IN on an ultrawide');
+  const phone = zoomFor(844, 390);
+  check(phone > 0.6 && phone < 0.66, `landscape phone zooms out (${phone.toFixed(3)})`);
+  check(Math.abs(zoomFor(844, 390) - 390 / 620) < 1e-9, 'height drives the phone zoom, not width');
+  check(zoomFor(390, 844) === ZOOM_MIN, 'portrait clamps at the zoom floor');
+  check(zoomFor(0, 0) === 1, 'zero-size viewport during layout falls back to 1');
+  // world visible at a given zoom — the number that decides what a player sees
+  check(Math.round(844 / phone) === 1342, `phone sees 1342 world px across (${Math.round(1342 / TILE)} tiles)`);
+
+  check(resolutionFor('fast', 3) === 1, 'fast tier ignores DPR');
+  check(resolutionFor('sharp', 3) === 2, 'sharp tier caps DPR at 2');
+  check(resolutionFor('sharp', 1) === 1, 'sharp tier on a DPR-1 desktop is unchanged');
+  check(resolutionFor('sharp', 0) === 1, 'a bogus DPR floors at 1');
+  check(bloomFor('sharp') && !bloomFor('fast'), 'bloom follows the tier');
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);

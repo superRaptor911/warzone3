@@ -22,7 +22,7 @@ export interface Layers {
   minimap: Container;
 }
 
-export function buildLayers(stage: Container): Layers {
+export function buildLayers(stage: Container, bloom: boolean): Layers {
   const world = new Container();
   const ground = new Container();
   const under = new Container();
@@ -32,8 +32,11 @@ export function buildLayers(stage: Container): Layers {
   const lightSlot = new Container();
   const worldFx = new Container();
   const emissive = new Container();
-  // bloom only on the emissive layer (tracers/flashes) — map and UI stay crisp
-  emissive.filters = [new AdvancedBloomFilter({ threshold: 0.1, bloomScale: 0.9, blur: 6, quality: 4 })];
+  // bloom only on the emissive layer (tracers/flashes) — map and UI stay crisp.
+  // Purely cosmetic, so the `fast` quality tier drops it (see view.ts).
+  if (bloom) {
+    emissive.filters = [new AdvancedBloomFilter({ threshold: 0.1, bloomScale: 0.9, blur: 6, quality: 4 })];
+  }
   const floats = new Container();
   worldFx.addChild(emissive, floats);
   const screenUi = new Container();
@@ -100,7 +103,7 @@ class PlayerVisual {
   private cycle = new WalkCycle();
   private frame: number | 'idle' | null = null;
 
-  constructor(tx: GfxTextures) {
+  constructor(tx: GfxTextures, textScale: number) {
     this.tx = tx;
     this.prot = tx.sprite(ringKey(PLAYER_RADIUS + 5, 1));
     this.gun = tx.sprite(gunKey('rifle'));
@@ -123,6 +126,14 @@ class PlayerVisual {
     // gun sits ABOVE the body so it lands in the baked empty hands
     this.root.addChild(this.prot, this.body, this.edge, this.gun, this.dot,
       this.name, this.barBg, this.barFg, this.reload);
+    this.setTextScale(textScale);
+  }
+
+  // Counter-scales the labels against the world zoom so they keep their
+  // designed pixel size (positions stay in world units and still scale).
+  setTextScale(s: number): void {
+    this.name.scale.set(s);
+    this.reload.scale.set(s);
   }
 
   update(p: PlayerSnap, x: number, y: number, aim: number, isMe: boolean, now: number): void {
@@ -244,12 +255,19 @@ export class Scene {
   private players = new Map<number, PlayerVisual>();
   private zombies = new Map<number, ZombieVisual>();
   private seen = new Set<number>();
+  private textScale = 1;
 
-  constructor(stage: Container, tx: GfxTextures) {
+  constructor(stage: Container, tx: GfxTextures, bloom: boolean) {
     this.tx = tx;
-    this.layers = buildLayers(stage);
+    this.layers = buildLayers(stage, bloom);
     const mapSprite = new Sprite(tx.map);
     this.layers.ground.addChild(mapSprite);
+  }
+
+  setTextScale(s: number): void {
+    if (s === this.textScale) return;
+    this.textScale = s;
+    for (const v of this.players.values()) v.setTextScale(s);
   }
 
   syncPlayers(players: PlayerSnap[], myId: number, me: { x: number; y: number; aim: number }, now: number): void {
@@ -258,7 +276,7 @@ export class Scene {
       this.seen.add(p.id);
       let v = this.players.get(p.id);
       if (!v) {
-        v = new PlayerVisual(this.tx);
+        v = new PlayerVisual(this.tx, this.textScale);
         this.players.set(p.id, v);
         this.layers.actors.addChild(v.root);
       }

@@ -67,12 +67,16 @@ export class Lights {
     return s;
   }
 
-  update(view: DrawView, vw: number, vh: number, worldX: number, worldY: number): void {
+  // `worldX/worldY/zoom` mirror the main world transform exactly — the light
+  // radii below stay in world px, so what a player can see is a function of the
+  // world, never of their screen size or zoom.
+  update(view: DrawView, vw: number, vh: number, worldX: number, worldY: number, zoom: number): void {
     if (this.rt.width !== vw || this.rt.height !== vh) this.rt.resize(vw, vh);
     const zombie = view.mode === 'zombie';
     this.ambient.tint = zombie ? AMBIENT_ZOMBIE : AMBIENT_TDM;
     this.ambient.scale.set(vw / 8, vh / 8);
     this.world.position.set(worldX, worldY);
+    this.world.scale.set(zoom);
 
     // own vision: soft radial clipped by a wall-blocked visibility polygon
     this.playerLight.visible = zombie;

@@ -4,6 +4,7 @@ import type { WeaponId } from '../../../shared/weapons.ts';
 import type { PlayerSnap, Vec2, ZombieSnap } from '../../../shared/types.ts';
 import { gunMuzzle } from './art.ts';
 import type { Fx } from '../fx.ts';
+import { zoomFor } from '../view.ts';
 import { GfxTextures } from './textures.ts';
 import { Scene } from './scene.ts';
 import { FxSync } from './fxsync.ts';
@@ -13,7 +14,7 @@ import { UiLayer } from './ui.ts';
 
 export interface DrawView {
   cam: Vec2;
-  mouse: Vec2;
+  crosshair: Vec2;   // screen-space point the reticle sits on (cursor, or aim ray on touch)
   myId: number;
   mode: string;
   now: number;
@@ -24,16 +25,36 @@ export interface DrawView {
   spread: number;
 }
 
+// Per-match render settings. Resolution and bloom are the quality tier;
+// uiScale shrinks the canvas-drawn UI (minimap) in step with the DOM HUD.
+export interface RenderOpts {
+  resolution: number;
+  bloom: boolean;
+  uiScale: number;
+}
+
 // One WebGL context for the life of the page (browsers cap ~16 contexts, and
 // main.ts constructs a new Renderer on every `welcome` — reconnects included).
 let app: Application | null = null;
 let live: Renderer | null = null;
 
-async function ensureApp(canvas: HTMLCanvasElement): Promise<Application> {
-  if (app) return app;
+async function ensureApp(canvas: HTMLCanvasElement, resolution: number): Promise<Application> {
+  if (app) {
+    // Quality tier changed between matches. The Renderer is rebuilt around this
+    // call, so every RenderTexture (lightmap, decals) is recreated at the new
+    // resolution anyway — only the canvas itself needs re-sizing here.
+    if (app.renderer.resolution !== resolution) {
+      app.renderer.resolution = resolution;
+      app.resize();
+    }
+    return app;
+  }
   const a = new Application();
+  // autoDensity keeps canvas.style.* in CSS px while the backing store scales
+  // with `resolution`, so all screen-space math below (and the stick/mouse ->
+  // world math in main.ts) stays in CSS px regardless of tier.
   await a.init({
-    canvas, resizeTo: window, resolution: 1, autoDensity: false,
+    canvas, resizeTo: window, resolution, autoDensity: true,
     antialias: true, background: '#07090d', autoStart: false,
     eventFeatures: { move: false, globalMove: false, click: false, wheel: false },
   });
@@ -59,35 +80,49 @@ export class Renderer {
   private emissiveArea = new Rectangle();
 
   // Async because Application.init is async; per-match scene on a page-lifetime app.
-  static async create(canvas: HTMLCanvasElement, grid: Grid): Promise<Renderer> {
-    const a = await ensureApp(canvas);
+  static async create(canvas: HTMLCanvasElement, grid: Grid, opts: RenderOpts): Promise<Renderer> {
+    const a = await ensureApp(canvas, opts.resolution);
     if (live) live.dispose();
     const tx = new GfxTextures();
     tx.bake(grid);
     await tx.tryLoadArtAtlas(); // optional real-art spritesheet overrides bakes
-    live = new Renderer(a, canvas, grid, tx);
+    live = new Renderer(a, canvas, grid, tx, opts);
     return live;
   }
 
-  private constructor(a: Application, canvas: HTMLCanvasElement, grid: Grid, tx: GfxTextures) {
+  private constructor(
+    a: Application, canvas: HTMLCanvasElement, grid: Grid, tx: GfxTextures, opts: RenderOpts,
+  ) {
     this.appRef = a;
     this.canvas = canvas;
     this.grid = grid;
     this.tx = tx;
-    this.scene = new Scene(a.stage, this.tx);
+    this.scene = new Scene(a.stage, this.tx, opts.bloom);
     // screen-sized filterArea: avoids per-frame bounds recompute on a sparse layer
     this.scene.layers.emissive.filterArea = this.emissiveArea;
     this.decals = new Decals(a, this.tx, this.scene.layers, grid);
     this.fxs = new FxSync(this.tx, this.scene.layers);
     this.lights = new Lights(a, this.tx, this.scene.layers, grid);
-    this.ui = new UiLayer(this.tx, this.scene.layers, grid);
+    this.ui = new UiLayer(this.tx, this.scene.layers, grid, opts.uiScale);
   }
 
-  camera(me: Vec2, mouse: Vec2, shake: Vec2): Vec2 {
-    const vw = this.canvas.width, vh = this.canvas.height;
+  // Viewport in CSS px (not backing-store px — see autoDensity above).
+  get screenW(): number { return this.appRef.screen.width; }
+  get screenH(): number { return this.appRef.screen.height; }
+
+  // World px per screen px. 1 on any viewport >= the VIEW_TARGET_* box, so
+  // desktop keeps the original 1:1 mapping.
+  get zoom(): number { return zoomFor(this.appRef.screen.width, this.appRef.screen.height); }
+
+  // `lead` is a world-space offset (mouse pull on desktop, aim-stick pull on
+  // touch). Clamping uses the *world* size of the viewport, which shrinks as
+  // the zoom does — otherwise a zoomed-out client would see past the map edge.
+  camera(me: Vec2, lead: Vec2, shake: Vec2): Vec2 {
+    const z = this.zoom;
+    const vw = this.screenW / z, vh = this.screenH / z;
     const g = this.grid;
-    let cx = me.x + (mouse.x - vw / 2) * 0.1;
-    let cy = me.y + (mouse.y - vh / 2) * 0.1;
+    let cx = me.x + lead.x;
+    let cy = me.y + lead.y;
     if (g.pxW() > vw) cx = Math.max(vw / 2, Math.min(g.pxW() - vw / 2, cx));
     else cx = g.pxW() / 2;
     if (g.pxH() > vh) cy = Math.max(vh / 2, Math.min(g.pxH() - vh / 2, cy));
@@ -112,19 +147,28 @@ export class Renderer {
   }
 
   draw(view: DrawView): void {
-    const vw = this.canvas.width, vh = this.canvas.height;
-    const ox = vw / 2 - view.cam.x, oy = vh / 2 - view.cam.y;
+    const vw = this.screenW, vh = this.screenH;
+    const z = this.zoom;
+    // screen = world * z + (ox, oy)
+    const ox = vw / 2 - view.cam.x * z, oy = vh / 2 - view.cam.y * z;
     const L = this.scene.layers;
     L.world.position.set(ox, oy);
+    L.world.scale.set(z);
     L.worldFx.position.set(ox, oy);
-    // world-space rect of the visible screen (worldFx is offset by ox/oy)
-    this.emissiveArea.x = -ox; this.emissiveArea.y = -oy;
-    this.emissiveArea.width = vw; this.emissiveArea.height = vh;
+    L.worldFx.scale.set(z);
+    // world-space rect of the visible screen (emissive is inside the scaled worldFx)
+    this.emissiveArea.x = -ox / z; this.emissiveArea.y = -oy / z;
+    this.emissiveArea.width = vw / z; this.emissiveArea.height = vh / z;
+    // text rides the world transform but must stay legible: counter-scale it so
+    // names and damage numbers keep their designed pixel size at any zoom
+    const textScale = 1 / z;
+    this.scene.setTextScale(textScale);
+    this.fxs.setTextScale(textScale);
     this.scene.syncZombies(view.zombies, view.now);
     this.scene.syncPlayers(view.players, view.myId, view.me, view.now);
     this.fxs.sync(view.fx);
-    this.lights.update(view, vw, vh, ox, oy);
-    this.ui.update(view, vw, vh);
+    this.lights.update(view, vw, vh, ox, oy, z);
+    this.ui.update(view, vw, vh, z);
     this.appRef.render();
   }
 

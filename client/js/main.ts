@@ -9,6 +9,7 @@ import { Renderer } from './render.ts';
 import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
+import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
 import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -24,6 +25,17 @@ let myId = 0, mode: GameMode = 'tdm', myName = 'Player';
 let seq = 0, lastFrame = 0, running = false, bootSeq = 0;
 let chosenPrimary = localStorage.getItem('wz3-primary') || 'rifle';
 let zombieCp = parseInt(localStorage.getItem('wz3-zombie-cp') || '0', 10) || 0;
+
+// Small/touch screens shrink the HUD and the minimap. Mirrors the media query
+// in style.css; read once at load, so the DOM HUD tracks a live resize but the
+// canvas-side minimap scale is fixed for the session.
+const COMPACT_UI = matchMedia('(pointer: coarse), (max-height: 500px)').matches;
+// Graphics tier: `sharp` = DPR-aware backing store + bloom, `fast` = neither.
+// Both tiers render identical gameplay information (see view.ts / lights.ts).
+const storedQ = localStorage.getItem('wz3-quality');
+let quality: QualityTier = storedQ === 'fast' || storedQ === 'sharp'
+  ? storedQ
+  : (matchMedia('(pointer: coarse)').matches ? 'fast' : 'sharp');
 
 // local gun-feel mirror (server stays authoritative for damage/ammo)
 const gun = { cd: 0, spread: 0, sinceShot: 0, wasDown: false };
@@ -47,6 +59,17 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('#loadout-opts butt
     localStorage.setItem('wz3-primary', chosenPrimary);
   };
 }
+// graphics tier picker — applied when the next match boots its Renderer
+for (const b of document.querySelectorAll<HTMLButtonElement>('#gfx-opts button')) {
+  b.classList.toggle('sel', b.dataset.q === quality);
+  b.onclick = () => {
+    quality = b.dataset.q as QualityTier;
+    localStorage.setItem('wz3-quality', quality);
+    document.querySelectorAll('#gfx-opts button').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+  };
+}
+
 for (const card of document.querySelectorAll<HTMLButtonElement>('.mode-card')) {
   card.onclick = () => {
     myName = nameInput.value.trim() || 'Player';
@@ -95,7 +118,11 @@ net.onWelcome = (m) => {
   // Renderer boot is async (WebGL init); snapshots arriving in the gap just
   // buffer in state. The token guards against a stale .then from a re-welcome.
   const boot = ++bootSeq;
-  void Renderer.create(canvas, grid).then((r) => {
+  void Renderer.create(canvas, grid, {
+    resolution: resolutionFor(quality, devicePixelRatio || 1),
+    bloom: bloomFor(quality),
+    uiScale: uiScaleFor(COMPACT_UI),
+  }).then((r) => {
     if (boot !== bootSeq) return;
     renderer = r;
     running = true;
@@ -273,10 +300,18 @@ function loop(t: number): void {
   }
 
   // --- aim ---
-  const baseCam = renderer.camera(mePos, input.mouse, { x: 0, y: 0 });
+  // Screen sizes are CSS px (autoDensity); `zoom` is world px per screen px and
+  // is 1 on any desktop-sized viewport, so this is the original math there.
+  const zoom = renderer.zoom;
+  const vw = renderer.screenW, vh = renderer.screenH;
+  const lead = {
+    x: ((input.mouse.x - vw / 2) * 0.1) / zoom,
+    y: ((input.mouse.y - vh / 2) * 0.1) / zoom,
+  };
+  const baseCam = renderer.camera(mePos, lead, { x: 0, y: 0 });
   const mouseWorld = {
-    x: baseCam.x + input.mouse.x - canvas.width / 2,
-    y: baseCam.y + input.mouse.y - canvas.height / 2,
+    x: baseCam.x + (input.mouse.x - vw / 2) / zoom,
+    y: baseCam.y + (input.mouse.y - vh / 2) / zoom,
   };
   const aim = Math.atan2(mouseWorld.y - mePos.y, mouseWorld.x - mePos.x);
 
@@ -363,7 +398,7 @@ function loop(t: number): void {
   let spreadShown = w.baseSpread + gun.spread;
   if (keys.w || keys.a || keys.s || keys.d) spreadShown *= w.moveSpreadMult;
   renderer.draw({
-    cam, mouse: input.mouse, myId, mode, now: t,
+    cam, crosshair: input.mouse, myId, mode, now: t,
     me: { x: mePos.x, y: mePos.y, aim },
     players: interp.players,
     zombies: interp.zombies,

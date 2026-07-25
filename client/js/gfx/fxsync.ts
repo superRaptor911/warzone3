@@ -80,6 +80,7 @@ export class FxSync {
   private smoke: ParticlePool<Fx['smoke'][number]>;
   private corpses: CorpseVisual[] = [];
   private floats: Text[] = [];
+  private textScale = 1;
 
   constructor(tx: GfxTextures, layers: Layers) {
     this.tx = tx;
@@ -94,6 +95,14 @@ export class FxSync {
     this.smoke = new ParticlePool(layers.fxTop, tx.entry('radial').tex, { scale: true }, (p) => {
       p.tint = 0x8a8f96;
     });
+  }
+
+  // Damage numbers live in the zoom-scaled worldFx layer; counter-scale them so
+  // they stay 14px on screen however far the world is zoomed out.
+  setTextScale(s: number): void {
+    if (s === this.textScale) return;
+    this.textScale = s;
+    for (const t of this.floats) t.scale.set(s);
   }
 
   sync(fx: Fx): void {
@@ -160,6 +169,7 @@ export class FxSync {
           style: { fontFamily: 'system-ui, sans-serif', fontSize: 14, fontWeight: 'bold', fill: '#ffffff' },
         });
         t.anchor.set(0.5, 1);
+        t.scale.set(this.textScale);
         return this.layers.floats.addChild(t);
       },
       (f, t) => {

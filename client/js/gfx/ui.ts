@@ -18,7 +18,7 @@ export class UiLayer {
   private layers: Layers;
   private tx: GfxTextures;
 
-  constructor(tx: GfxTextures, layers: Layers, grid: Grid) {
+  constructor(tx: GfxTextures, layers: Layers, grid: Grid, uiScale: number) {
     this.tx = tx;
     this.layers = layers;
     this.grid = grid;
@@ -39,50 +39,59 @@ export class UiLayer {
     const border = new Graphics()
       .rect(-0.5, -0.5, tx.mini.width + 1, tx.mini.height + 1)
       .stroke({ width: 1, color: 0x2b3648 });
+    // the whole minimap group scales with the HUD so it stays ~the same
+    // fraction of a small screen as it is of a desktop one
     layers.minimap.position.set(16, 16);
+    layers.minimap.scale.set(uiScale);
     layers.minimap.addChild(this.mini, border);
   }
 
-  update(view: DrawView, vw: number, vh: number): void {
-    this.crosshair(view);
-    this.threatChevrons(view, vw, vh);
+  update(view: DrawView, vw: number, vh: number, zoom: number): void {
+    this.crosshair(view, zoom);
+    this.threatChevrons(view, vw, vh, zoom);
     this.minimap(view);
   }
 
-  private crosshair(view: DrawView): void {
-    const { mouse, spread } = view;
-    const gap = 6 + Math.tan(Math.min(0.5, spread)) * 320;
+  private crosshair(view: DrawView, zoom: number): void {
+    const { crosshair, spread } = view;
+    // 320 is a nominal world distance; project it so the gap keeps showing the
+    // true size of the cone on screen at any zoom
+    const gap = 6 + Math.tan(Math.min(0.5, spread)) * 320 * zoom;
     const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     for (let i = 0; i < 4; i++) {
       const [dx, dy] = dirs[i];
       const s = this.arms[i];
-      s.position.set(mouse.x + dx * gap, mouse.y + dy * gap);
+      s.position.set(crosshair.x + dx * gap, crosshair.y + dy * gap);
       s.rotation = Math.atan2(dy, dx);
     }
-    this.dot.position.set(mouse.x, mouse.y);
+    this.dot.position.set(crosshair.x, crosshair.y);
   }
 
   // Edge chevrons for zombies just outside the viewport (zombie mode only —
   // in TDM this would leak enemy positions). Intensity scales with how close
   // the zombie is to entering the screen, capped to the nearest few so a
   // frenzy horde doesn't ring the whole border.
-  private threatChevrons(view: DrawView, vw: number, vh: number): void {
+  private threatChevrons(view: DrawView, vw: number, vh: number, zoom: number): void {
     let used = 0;
     const meSnap = view.players.find(p => p.id === view.myId);
     if (view.mode === 'zombie' && meSnap && meSnap.alive) {
-      const camL = view.cam.x - vw / 2, camT = view.cam.y - vh / 2;
+      // world -> screen projection for this frame
+      const ox = vw / 2 - view.cam.x * zoom, oy = vh / 2 - view.cam.y * zoom;
       const REACH = 500, MAX_SHOWN = 4, MARGIN = 26;
+      // How far off-screen a zombie is, measured in WORLD px: a zoomed-out
+      // client is warned about exactly the zombies a desktop client is, no more.
+      const halfW = vw / (2 * zoom), halfH = vh / (2 * zoom);
       const threats: { sx: number; sy: number; beyond: number }[] = [];
-      for (const z of view.zombies) {
-        const sx = z.x - camL, sy = z.y - camT;
-        const bx = sx < 0 ? -sx : sx > vw ? sx - vw : 0;
-        const by = sy < 0 ? -sy : sy > vh ? sy - vh : 0;
+      for (const zb of view.zombies) {
+        const dx = Math.abs(zb.x - view.cam.x), dy = Math.abs(zb.y - view.cam.y);
+        const bx = dx > halfW ? dx - halfW : 0;
+        const by = dy > halfH ? dy - halfH : 0;
         const beyond = Math.hypot(bx, by);
         if (beyond <= 0 || beyond > REACH) continue;
-        threats.push({ sx, sy, beyond });
+        threats.push({ sx: zb.x * zoom + ox, sy: zb.y * zoom + oy, beyond });
       }
       threats.sort((a, b) => a.beyond - b.beyond);
-      const px = view.me.x - camL, py = view.me.y - camT;
+      const px = view.me.x * zoom + ox, py = view.me.y * zoom + oy;
       for (const t of threats.slice(0, MAX_SHOWN)) {
         const a = Math.atan2(t.sy - py, t.sx - px);
         const dx = Math.cos(a), dy = Math.sin(a);
