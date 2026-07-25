@@ -37,10 +37,11 @@ let zombieCp = parseInt(localStorage.getItem('wz3-zombie-cp') || '0', 10) || 0;
 const COMPACT_UI = matchMedia('(pointer: coarse), (max-height: 500px)').matches;
 // Graphics tier: `sharp` = DPR-aware backing store + bloom, `fast` = neither.
 // Both tiers render identical gameplay information (see view.ts / lights.ts).
+// `sharp` is the default everywhere, phones included — resolutionFor caps the
+// backing store at 2 regardless of DPR, and the FPS readout plus the menu
+// picker are the escape hatch for hardware that can't hold it.
 const storedQ = localStorage.getItem('wz3-quality');
-let quality: QualityTier = storedQ === 'fast' || storedQ === 'sharp'
-  ? storedQ
-  : (matchMedia('(pointer: coarse)').matches ? 'fast' : 'sharp');
+let quality: QualityTier = storedQ === 'fast' || storedQ === 'sharp' ? storedQ : 'sharp';
 
 // local gun-feel mirror (server stays authoritative for damage/ammo)
 const gun = { cd: 0, spread: 0, sinceShot: 0, wasDown: false };
