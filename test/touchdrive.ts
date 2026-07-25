@@ -305,16 +305,23 @@ await page.evaluate(`window.__hot = false; (function poll(){
   if (document.getElementById('astick').classList.contains('hot')) window.__hot = true;
   requestAnimationFrame(poll);
 })()`);
+// Two rounds, not one: a raw held flag would spend exactly one, so the second
+// is the cadence working. Not more than two, because the budget is spent
+// waiting for zombies to walk to us and a downed player waits for the wave to
+// clear before being revived — this must not become a coin flip.
 let spent = 0;
 let prev = await magOf();
-const budget = Date.now() + 90000;
-while (spent < 3 && Date.now() < budget) {
+const budget = Date.now() + 150000;
+while (spent < 2 && Date.now() < budget) {
   await page.touch([{ x: 640, y: 250 }, ...ring(12, 70)]);
   const m = await magOf();
   if (m < prev) spent += prev - m; // a rise is the auto-reload, not a shot
   prev = m;
 }
-check(spent >= 3, `sweeping onto a zombie fires, and keeps firing (${spent} rounds; a raw held flag would stop at 1)`);
+const alive = !(await page.evaluate<boolean>(
+  `/DOWN|OVERRUN/.test(document.getElementById('center-msg').textContent || '')`));
+check(spent >= 2,
+  `sweeping onto a zombie fires, and keeps firing (${spent} rounds${alive ? '' : ', player was DOWN'})`);
 check(await page.evaluate<boolean>(`window.__hot === true`),
   'the stick ring lights while the gun is going off');
 await page.release();
