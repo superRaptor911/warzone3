@@ -10,8 +10,11 @@ npm test                  # tsc type check, then both test files in order
 npm run check             # type check only (tsc --noEmit)
 node test/matchflow.ts    # fast: room-level unit tests (no network)
 node test/smoke.ts        # slower (~30s): boots a real server on port 3199, drives ws clients through both modes
+npm run test:touch        # optional (~60s): drives the real client in headless Chrome over CDP — real touch
+                          # points on the pads, plus a desktop regression pass. Skips (exit 0) with no Chrome.
 npm run vendor            # re-copy pixi.js / pixi-filters ESM builds into client/vendor/ (run after upgrading them)
 # http://localhost:3000/atlas-preview.html   eyeball every baked sprite frame/tint/rotation + hitbox rings
+# http://localhost:3000/touch-preview.html   live pads + input dump (real Touch/stick modules) for tuning feel
 ```
 
 No build step, no lint. Everything is TypeScript executed directly: Node (≥22.18) runs
@@ -65,6 +68,17 @@ Client-side, `client/js/state.ts` (`simStep`) mirrors server `applyInput` moveme
 `main.ts` is the orchestrator; per frame it sends one input message and runs a **local gun-feel mirror** (muzzle flash/tracer/sound/cooldown/spread fired immediately) while the server remains authoritative for hits and ammo — hitmarkers/damage numbers come only from server events. Remote entities render 130ms in the past via snapshot interpolation (`INTERP_DELAY_MS`). Own `shot` events from the server are skipped (already predicted). UI is DOM (`hud.ts`), not canvas; sounds are WebAudio-synthesized in `audio.ts` and sprites are procedurally baked in `gfx/art.ts` (no image/audio assets shipped).
 
 `view.ts` holds the viewport math — `zoomFor`, `resolutionFor`, `bloomFor`, `uiScaleFor`. It is **pure and DOM-free on purpose** so `test/matchflow.ts` can import it under Node; it is the only place that decides how much world fits on a screen.
+
+### Touch (`client/js/touch.ts`, `client/js/stick.ts`)
+
+Twin-stick: a fixed 8-way dpad on the left half, a floating aim stick on the right whose deflection sets both `aim` and `fire`. Entirely client-side — mobile support adds **zero lines to `server/` or `shared/`**, and mobile and desktop share rooms.
+
+- `stick.ts` is pure (no DOM/Pixi), like `view.ts`, so the parts that actually break are unit-tested: `stickKeys` quantises to eight equal 45° sectors — **exact parity with WASD**, which is the point, since `shared/physics.ts` normalises diagonals and would ignore an analog magnitude anyway.
+- `tickFireCadence` is the load-bearing piece. `pistol`/`shotgun`/`sniper` are semi-auto and the server edge-detects fire via `firePrev`, so a held stick would fire **exactly one round**. The client pulses the flag at the weapon's own `fireIntervalMs`, the same trick `server/bot.ts` uses via `fireTick`. Rate stays rpm-bound, so it is parity with clicking, not a buff. Auto weapons bypass it entirely.
+- `touch.ts` is only pointer plumbing. The overlay is at **z-index 9, below `#hud`** — `#hud` is `pointer-events:none` apart from its interactive children, so pad drags fall through while the armory, bot bar and topbar still take their own taps. Never raise it above the HUD.
+- **SPRINT gates the wire flag on movement rather than clearing the toggle.** `tickSprint` drains stamina whenever the flag is set, moving or not, so a toggle left on would leak it; but clearing the toggle when you stop makes a pre-emptive tap impossible, because the cancel fires on the same frame as the press. It still clears on exhaustion or death.
+- Keyboard and touch are both read whenever the pads are up, so a phone with a bluetooth keyboard works.
+- Landscape is required (`#rotate` gate in portrait, sim keeps running underneath); the menu stays usable in portrait. Fullscreen, orientation lock and wake lock are requested from the mode-card tap (a user gesture) and are **all best-effort** — iPhone Safari ignores element fullscreen and orientation lock, so the layout must be correct without them.
 
 ### Rendering (`client/js/gfx/`, PixiJS v8 / WebGL)
 

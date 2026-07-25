@@ -125,12 +125,40 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('#gfx-opts button')
   };
 }
 
+// Fullscreen, orientation lock and wake lock, all requested from the mode-card
+// tap because that is a user gesture (it is already where audio.ensure runs).
+// Every one of them is unsupported somewhere — iPhone Safari ignores element
+// fullscreen and orientation lock outright — so all three are best-effort and
+// the layout has to be correct without any of them.
+interface WakeLockish { release(): Promise<void> }
+let wakeLock: WakeLockish | null = null;
+
+async function acquireWakeLock(): Promise<void> {
+  const nav = navigator as unknown as { wakeLock?: { request(t: string): Promise<WakeLockish> } };
+  if (!nav.wakeLock) return;
+  try { wakeLock = await nav.wakeLock.request('screen'); } catch { /* denied or unsupported */ }
+}
+
+async function goImmersive(): Promise<void> {
+  if (!touch.active) return;
+  try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch { /* unsupported */ }
+  const orient = screen.orientation as unknown as { lock?(o: string): Promise<void> } | undefined;
+  try { await orient?.lock?.('landscape'); } catch { /* iOS, or not fullscreen */ }
+  await acquireWakeLock();
+}
+
+// the browser drops the lock whenever the tab is backgrounded
+addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running && !wakeLock) void acquireWakeLock();
+});
+
 for (const card of document.querySelectorAll<HTMLButtonElement>('.mode-card')) {
   card.onclick = () => {
     myName = nameInput.value.trim() || 'Player';
     localStorage.setItem('wz3-name', myName);
     $('conn-status').textContent = 'connecting…';
     audio.ensure();
+    void goImmersive();
     const cp = card.dataset.mode === 'zombie' ? zombieCp : 0;
     net.connect({ t: 'join', name: myName, mode: card.dataset.mode, primary: chosenPrimary, cp });
   };
@@ -153,6 +181,7 @@ refreshCpRow();
 
 net.onClose = (reason) => {
   running = false;
+  if (wakeLock) { void wakeLock.release().catch(() => {}); wakeLock = null; }
   $('hud').classList.add('hidden');
   $('menu').classList.remove('hidden');
   $('conn-status').textContent = reason || 'disconnected';

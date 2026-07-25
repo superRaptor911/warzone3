@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>WARZONE·3 — touch preview</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* the real pads come from style.css; this page only adds the readout */
+  body { background: #0b0f16; }
+  #dump { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 40;
+    background: rgba(10,13,18,.86); border: 1px solid #2b3648; border-radius: 8px; padding: 10px 14px;
+    font: 12px/1.7 ui-monospace, monospace; color: #b6c0cf; white-space: pre; pointer-events: none;
+    font-variant-numeric: tabular-nums; }
+  #dump b { color: #9fe870; font-weight: 700; }
+  #dump .off { color: #4a5464; }
+  #sectors { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); z-index: 39; opacity: .9; }
+  #note { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 40;
+    font: 11px/1.5 'Segoe UI', system-ui, sans-serif; color: #596374; letter-spacing: 1px; text-align: center;
+    pointer-events: none; }
+</style>
+</head>
+<body class="touch">
+
+<canvas id="sectors" width="260" height="260"></canvas>
+<div id="dump"></div>
+<div id="note">the real Touch/stick modules, not a mock &middot; drag either half &middot; resize to watch zoom/HUD scale</div>
+
+<!-- identical markup to index.html: this page drives the real Touch class -->
+<div id="touch" class="hidden">
+  <div id="dpad">
+    <span class="dp dp-w"></span><span class="dp dp-a"></span>
+    <span class="dp dp-d"></span><span class="dp dp-s"></span>
+  </div>
+  <div id="astick" class="hidden"><div id="aknob"></div></div>
+  <div id="tbtns-left">
+    <button data-t="armory" id="tb-armory">ARMORY</button>
+    <button data-t="sprint" id="tb-sprint">SPRINT</button>
+  </div>
+  <div id="tbtns-right">
+    <button data-t="swap">SWAP</button>
+    <button data-t="reload">RELOAD</button>
+  </div>
+</div>
+
+<!-- deliberately no #rotate here: the pads are worth tuning in portrait too -->
+
+<script type="module">
+import { Touch } from '/js/touch.ts';
+import { DEAD_ZONE, STICK_R, newFireCadence, tickFireCadence } from '/js/stick.ts';
+import { zoomFor } from '/js/view.ts';
+import { WEAPONS, fireIntervalMs } from '/shared/weapons.ts';
+
+const touch = new Touch();
+touch.setActive(true);
+
+// cycle a weapon with SWAP so the fire cadence can be watched on a semi-auto
+const ORDER = ['pistol', 'smg', 'rifle', 'shotgun', 'sniper'];
+let wi = 0;
+const cadence = newFireCadence();
+let shots = 0, shotsWindow = 0, rate = 0, since = 0;
+
+const dump = document.getElementById('dump');
+const cvs = document.getElementById('sectors');
+const ctx = cvs.getContext('2d');
+
+const flag = (on, label) => on ? `<b>${label}</b>` : `<span class="off">${label}</span>`;
+
+let last = performance.now();
+function frame(t) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, Math.max(0.001, (t - last) / 1000));
+  last = t;
+
+  if (touch.consume('swap')) { wi = (wi + 1) % ORDER.length; shots = 0; }
+  const reloaded = touch.consume('reload');
+  const armory = touch.consume('armory');
+  const w = WEAPONS[ORDER[wi]];
+
+  const held = touch.deflect >= DEAD_ZONE;
+  if (tickFireCadence(cadence, held, w.auto, fireIntervalMs(w) / 1000, dt)) { shots++; shotsWindow++; }
+  since += dt;
+  if (since >= 1) { rate = shotsWindow / since; shotsWindow = 0; since = 0; }
+
+  const k = touch.keys;
+  const deg = (touch.aim * 180 / Math.PI).toFixed(1).padStart(7);
+  dump.innerHTML =
+    `keys      ${flag(k.w, 'W')} ${flag(k.a, 'A')} ${flag(k.s, 'S')} ${flag(k.d, 'D')}\n` +
+    `aim       ${deg}°   deflect ${touch.deflect.toFixed(2)}   ${flag(held, 'FIRING')}\n` +
+    `weapon    ${w.name}  (${w.auto ? 'auto' : 'semi'}, ${w.rpm} rpm = ${(w.rpm / 60).toFixed(1)}/s)\n` +
+    `edges     ${String(shots).padStart(4)} total   measured ${rate.toFixed(1)}/s\n` +
+    `sprint    ${flag(touch.sprint, 'ARMED')}   tapped ${flag(touch.tapped, 'YES')}\n` +
+    `buttons   ${flag(reloaded, 'RELOAD')} ${flag(armory, 'ARMORY')}  (SWAP cycles the weapon)\n` +
+    `viewport  ${innerWidth}x${innerHeight}  zoom ${zoomFor(innerWidth, innerHeight).toFixed(3)}  ` +
+    `--s ${getComputedStyle(document.documentElement).getPropertyValue('--s').trim()}\n` +
+    `stick     radius ${STICK_R}px  deadzone ${DEAD_ZONE} (${(DEAD_ZONE * STICK_R).toFixed(0)}px)`;
+
+  // sector wheel: the 8 buckets stickKeys quantises to, plus the live vector
+  const R = 120, cx = 130, cy = 130;
+  ctx.clearRect(0, 0, 260, 260);
+  for (let i = 0; i < 8; i++) {
+    const a0 = (i - 0.5) * Math.PI / 4, a1 = (i + 0.5) * Math.PI / 4;
+    const on = sectorActive(i, k);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, a0, a1);
+    ctx.closePath();
+    ctx.fillStyle = on ? 'rgba(159,232,112,.22)' : 'rgba(90,105,130,.07)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90,105,130,.35)';
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * DEAD_ZONE, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(232,72,63,.7)';
+  ctx.stroke();
+  if (touch.deflect > 0) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(touch.aim) * R * touch.deflect, cy + Math.sin(touch.aim) * R * touch.deflect);
+    ctx.strokeStyle = '#e8483f';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  touch.endFrame();
+}
+
+// which of the 8 sectors the current key set corresponds to
+function sectorActive(i, k) {
+  const want = [
+    { d: 1 }, { d: 1, s: 1 }, { s: 1 }, { a: 1, s: 1 },
+    { a: 1 }, { a: 1, w: 1 }, { w: 1 }, { d: 1, w: 1 },
+  ][i];
+  const keys = ['w', 'a', 's', 'd'];
+  return keys.every(key => !!want[key] === !!k[key]) && keys.some(key => !!k[key]);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

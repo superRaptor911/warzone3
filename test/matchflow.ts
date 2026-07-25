@@ -5,6 +5,8 @@ import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
+import { DEAD_ZONE, STICK_R, deflection, newFireCadence, stickKeys, tickFireCadence } from '../client/js/stick.ts';
+import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
 
 let failures = 0;
 function check(cond: unknown, msg: string): void {
@@ -211,6 +213,85 @@ console.log('\nviewport math');
   check(resolutionFor('sharp', 1) === 1, 'sharp tier on a DPR-1 desktop is unchanged');
   check(resolutionFor('sharp', 0) === 1, 'a bogus DPR floors at 1');
   check(bloomFor('sharp') && !bloomFor('fast'), 'bloom follows the tier');
+}
+
+// ---- touch: stick quantisation ----
+console.log('\ntouch stick');
+{
+  const R = STICK_R;
+  const keys = (dx: number, dy: number) => JSON.stringify(stickKeys(dx, dy));
+  // screen +y is down, so -y is 'w'
+  check(keys(0, -R) === JSON.stringify({ w: 1 }), 'straight up is W alone');
+  check(keys(0, R) === JSON.stringify({ s: 1 }), 'straight down is S alone');
+  check(keys(-R, 0) === JSON.stringify({ a: 1 }), 'left is A alone');
+  check(keys(R, 0) === JSON.stringify({ d: 1 }), 'right is D alone');
+  check(keys(R * 0.7, -R * 0.7) === JSON.stringify({ d: 1, w: 1 }), 'up-right is the W+D diagonal');
+  check(keys(-R * 0.7, R * 0.7) === JSON.stringify({ s: 1, a: 1 }), 'down-left is the S+A diagonal');
+
+  check(keys(0, 0) === '{}', 'centred stick emits nothing');
+  check(keys(R * 0.2, 0) === '{}', 'inside the deadzone emits nothing');
+  check(keys(R * 0.26, 0) !== '{}', 'just outside the deadzone registers');
+  check(Math.abs(deflection(R * 0.5, 0) - 0.5) < 1e-9, 'deflection is a 0..1 fraction of the radius');
+  check(deflection(R * 4, 0) === 1, 'deflection clamps at 1 beyond the stick edge');
+
+  // Sector boundaries sit at 22.5 degrees. Sweeping the full circle must give
+  // exactly 8 distinct key sets, each held for exactly 45 degrees.
+  const seen = new Map<string, number>();
+  for (let i = 0; i < 3600; i++) {
+    const a = (i / 3600) * Math.PI * 2;
+    const s = keys(Math.cos(a) * R, Math.sin(a) * R);
+    seen.set(s, (seen.get(s) || 0) + 1);
+  }
+  check(seen.size === 8, `a full sweep yields exactly 8 directions (got ${seen.size})`);
+  // 3600 samples / 8 sectors = 450 each; +-2 is float noise at the boundaries
+  const spread = [...seen.values()];
+  check(Math.max(...spread) - Math.min(...spread) <= 2,
+    `every sector is 45 degrees wide within 0.2 degrees (${Math.min(...spread)}..${Math.max(...spread)} of 450)`);
+  check(!seen.has('{}'), 'a fully deflected stick never reads as centred');
+}
+
+// ---- touch: synthesised fire edges for semi-autos ----
+console.log('\ntouch fire cadence');
+{
+  const dt = 1 / 60;
+  const run = (weapon: 'pistol' | 'rifle' | 'sniper', seconds: number, held = true) => {
+    const w = WEAPONS[weapon];
+    const st = newFireCadence();
+    let edges = 0, prev = false;
+    for (let i = 0; i < Math.round(seconds / dt); i++) {
+      const f = tickFireCadence(st, held, w.auto, fireIntervalMs(w) / 1000, dt);
+      if (f && !prev) edges++; // exactly what the server's firePrev sees
+      prev = f;
+    }
+    return edges;
+  };
+
+  // held for 1s: a raw held flag would give the server ONE edge for a semi-auto
+  const pistol = run('pistol', 1);
+  check(pistol >= 5 && pistol <= 6, `pistol (340rpm semi) yields ~5.7 edges/s, got ${pistol}`);
+  // 42rpm = one shot per 1.43s, so 10s of holding is 7 shots — the stick cannot
+  // make a bolt-action any faster than the weapon allows
+  const sniper = run('sniper', 10);
+  check(sniper === 7, `sniper (42rpm semi) yields 7 edges in 10s, got ${sniper}`);
+  check(run('pistol', 1, false) === 0, 'no edges while the stick is centred');
+
+  // rate must stay bounded by rpm — this is parity with clicking, not a buff
+  check(pistol <= Math.ceil(WEAPONS.pistol.rpm / 60), 'cadence never exceeds the weapon rpm');
+
+  // auto weapons bypass the cadence entirely: one continuous hold
+  const st = newFireCadence();
+  let lows = 0;
+  for (let i = 0; i < 60; i++) {
+    if (!tickFireCadence(st, true, WEAPONS.rifle.auto, fireIntervalMs(WEAPONS.rifle) / 1000, dt)) lows++;
+  }
+  check(lows === 0, 'an auto weapon holds fire high the whole time');
+
+  // releasing must reset, so the next press fires immediately rather than
+  // waiting out a stale interval
+  const st2 = newFireCadence();
+  tickFireCadence(st2, true, false, 1, dt);   // shot
+  tickFireCadence(st2, false, false, 1, dt);  // release
+  check(tickFireCadence(st2, true, false, 1, dt), 'a fresh press fires immediately after release');
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);
