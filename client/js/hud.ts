@@ -39,7 +39,7 @@ export class Hud {
   slotSig = '';         // last-rendered weapon-slot signature, see update()
   winded = false;       // sticky until stamina recovers past the sprint threshold
   perfFps = -1;         // last-rendered perf numbers, see perf()
-  perfPing = -1;
+  perfPing = NaN;       // NaN, not -1: -1 is a real ping value ("no pong yet")
   centerHtml: string | null = null; // last-rendered centre overlay, see centerMsg()
 
   constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy }: HudHandlers) {
@@ -179,7 +179,9 @@ export class Hud {
     if (ping !== this.perfPing) {
       this.perfPing = ping;
       const el = $('perf-ping');
-      el.textContent = ping > 0 ? `${ping} ms` : '— ms';
+      // "— ms" now means literally no pong has come back yet; a sub-millisecond
+      // LAN round trip reads "<1 ms" instead of looking like a dead probe.
+      el.textContent = ping < 0 ? '— ms' : (ping === 0 ? '<1 ms' : `${ping} ms`);
       el.className = ping >= 150 ? 'bad' : (ping >= 80 ? 'warn' : '');
     }
   }
