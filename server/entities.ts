@@ -1,5 +1,5 @@
 import { WEAPONS, type Weapon, type WeaponId } from '../shared/weapons.ts';
-import { PLAYER_HP, STAMINA_MAX } from '../shared/constants.ts';
+import { PLAYER_HP, STAMINA_MAX, ZOMBIE_RADII } from '../shared/constants.ts';
 import type { Ammo, InputMsg, Vec2, ZombieTypeId } from '../shared/types.ts';
 import type { BotController } from './bot.ts';
 
@@ -77,9 +77,9 @@ export function refillAmmo(p: Player): void {
 export const ZOMBIE_TYPES: Record<ZombieTypeId, {
   hp: number; speed: number; damage: number; radius: number; attackMs: number; points: number;
 }> = {
-  walker: { hp: 60, speed: 62, damage: 12, radius: 15, attackMs: 900, points: 10 },
-  runner: { hp: 40, speed: 138, damage: 9, radius: 13, attackMs: 700, points: 15 },
-  brute: { hp: 320, speed: 46, damage: 34, radius: 22, attackMs: 1300, points: 60 },
+  walker: { hp: 60, speed: 62, damage: 12, radius: ZOMBIE_RADII.walker, attackMs: 900, points: 10 },
+  runner: { hp: 40, speed: 138, damage: 9, radius: ZOMBIE_RADII.runner, attackMs: 700, points: 15 },
+  brute: { hp: 320, speed: 46, damage: 34, radius: ZOMBIE_RADII.brute, attackMs: 1300, points: 60 },
 };
 
 export interface Zombie {

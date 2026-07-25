@@ -1,7 +1,8 @@
 import { Application, Rectangle } from 'pixi.js';
-import { PLAYER_RADIUS } from '../../../shared/constants.ts';
 import type { Grid } from '../../../shared/maps.ts';
+import type { WeaponId } from '../../../shared/weapons.ts';
 import type { PlayerSnap, Vec2, ZombieSnap } from '../../../shared/types.ts';
+import { gunMuzzle } from './art.ts';
 import type { Fx } from '../fx.ts';
 import { GfxTextures } from './textures.ts';
 import { Scene } from './scene.ts';
@@ -94,8 +95,12 @@ export class Renderer {
     return { x: cx + shake.x, y: cy + shake.y };
   }
 
-  gunTip(x: number, y: number, aim: number, r = PLAYER_RADIUS): Vec2 {
-    return { x: x + Math.cos(aim) * (r + 10), y: y + Math.sin(aim) * (r + 10) };
+  // Muzzle position for flashes/tracers/flash light — per weapon, from the same
+  // GUN_SPEC table the sprites bake from, so it always lands on the barrel end.
+  // Cosmetic only: the server's hitscan origin is the player centre.
+  gunTip(x: number, y: number, aim: number, w: WeaponId): Vec2 {
+    const d = gunMuzzle(w);
+    return { x: x + Math.cos(aim) * d, y: y + Math.sin(aim) * d };
   }
 
   stampBlood(x: number, y: number, big: boolean, zombie: boolean): void {

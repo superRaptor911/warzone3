@@ -131,6 +131,11 @@ wss.on('connection', (socket) => {
       case 'input':
         room.queueInput(p, m);
         break;
+      // app-level RTT probe (distinct from the ws-protocol ping above): echo the
+      // client's own timestamp back so it can measure without a clock sync
+      case 'ping':
+        if (typeof m.ts === 'number') ws.send(JSON.stringify({ t: 'pong', ts: m.ts }));
+        break;
       case 'reload':
         room.startReload(p);
         break;

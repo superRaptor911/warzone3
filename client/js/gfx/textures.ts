@@ -1,9 +1,15 @@
 import { Assets, Rectangle, Sprite, Texture } from 'pixi.js';
 import type { Spritesheet } from 'pixi.js';
-import { PLAYER_RADIUS, TEAM, TILE } from '../../../shared/constants.ts';
+import { PLAYER_RADIUS, TEAM, TILE, ZOMBIE_RADII } from '../../../shared/constants.ts';
 import { T_CRATE, T_FLOOR, T_WALL, type Grid } from '../../../shared/maps.ts';
-import type { WeaponId } from '../../../shared/weapons.ts';
+import { WEAPONS, type WeaponId } from '../../../shared/weapons.ts';
 import type { ZombieTypeId } from '../../../shared/types.ts';
+import {
+  BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, WALK_FRAMES,
+  bodyKey, drawBody, drawGun, gunKey, type BodyKind,
+} from './art.ts';
+
+export { gunKey };
 
 export interface TeamColor { body: string; dark: string; name: string }
 export const TEAM_COLORS: Record<number, TeamColor> = {
@@ -11,21 +17,26 @@ export const TEAM_COLORS: Record<number, TeamColor> = {
   [TEAM.BLUE]: { body: '#3d6fc2', dark: '#294b85', name: '#8ebbff' },
   [TEAM.SURVIVOR]: { body: '#4c9e5f', dark: '#336b41', name: '#9fe870' },
 };
+// Radii come from shared/constants.ts so body frames and rings are baked at the
+// authoritative hitbox size — visuals cannot drift from collision.
 export const ZTYPE: Record<ZombieTypeId, { color: string; dark: string; r: number }> = {
-  walker: { color: '#5d8a42', dark: '#3d5c2b', r: 15 },
-  runner: { color: '#8fb457', dark: '#5c7a36', r: 13 },
-  brute: { color: '#39602c', dark: '#24401b', r: 22 },
+  walker: { color: '#5d8a42', dark: '#3d5c2b', r: ZOMBIE_RADII.walker },
+  runner: { color: '#8fb457', dark: '#5c7a36', r: ZOMBIE_RADII.runner },
+  brute: { color: '#39602c', dark: '#24401b', r: ZOMBIE_RADII.brute },
+};
+
+export const BODY_RADIUS: Record<BodyKind, number> = {
+  player: PLAYER_RADIUS,
+  walker: ZOMBIE_RADII.walker,
+  runner: ZOMBIE_RADII.runner,
+  brute: ZOMBIE_RADII.brute,
 };
 
 export const DISC_R = 32;        // 'disc' bake radius; scale = wantedRadius / DISC_R
 export const TRACER_W = 64;      // 'tracer' strip length in texture px
 export const TRACER_H = 4;
 export const CHEVRON_S = 18;     // 'chevron' baked at this nominal size
-export const GUN_LEN: Record<string, number> = { sniper: 30, pistol: 18, rifle: 25 };
 
-export function gunKey(w: WeaponId): string {
-  return w === 'sniper' ? 'gun-sniper' : w === 'pistol' ? 'gun-pistol' : 'gun-rifle';
-}
 export function ringKey(r: number, w: number): string { return `ring:${r}x${w}`; }
 
 function hash2(x: number, y: number): number {
@@ -118,10 +129,13 @@ function loadArtSheet(): Promise<Spritesheet | null> {
   return artProbe;
 }
 
-// All small shapes are baked into one 512x512 canvas atlas so every sprite
-// shares a single texture source (full batching). Shapes that vary by team or
-// zombie type are baked white and tinted at runtime — this is also the
-// spritesheet contract for future real art (phase 5).
+// All small shapes are baked into one 1024x1024 canvas atlas so every sprite
+// shares a single texture source (full batching) — 1024 because the body walk
+// frame sets (4 kinds x 5 frames, supersampled) overflow 512; 46 cells fill
+// ~29% of the 1024 height, leaving room for more frame sets. Shapes
+// that vary by team or zombie type are baked white/greyscale and tinted at
+// runtime — this is also the spritesheet contract for real art (see
+// tryLoadArtAtlas).
 export class GfxTextures {
   map!: Texture;
   mini!: Texture;
@@ -146,7 +160,7 @@ export class GfxTextures {
     this.mini = Texture.from(buildMiniCanvas(grid));
 
     const c = document.createElement('canvas');
-    c.width = 512; c.height = 512;
+    c.width = 1024; c.height = 1024;
     const x = c.getContext('2d')!;
     const PAD = 3;
     let cx = PAD, cy = PAD, rowH = 0;
@@ -174,13 +188,18 @@ export class GfxTextures {
       g.beginPath(); g.arc(DISC_R + 1, DISC_R + 1, DISC_R, 0, 7); g.fill();
     });
 
-    // white rings at the exact radii/stroke-widths the old renderer used
+    // white rings marking each entity's exact collision radius. Deduped: radii
+    // now come from shared constants and can legitimately coincide (a player and
+    // a walker are both 17), which would otherwise bake the same cell twice.
     const rings: [number, number][] = [
       [PLAYER_RADIUS, 3], [PLAYER_RADIUS, 2.5], [PLAYER_RADIUS + 5, 1], // edge / my edge / prot
       [ZTYPE.runner.r, 3], [ZTYPE.walker.r, 3], [ZTYPE.brute.r, 3],    // zombie edges
       [ZTYPE.runner.r + 5, 2.5], [ZTYPE.walker.r + 5, 2.5], [ZTYPE.brute.r + 5, 2.5], // frenzy
     ];
+    const ringSeen = new Set<string>();
     for (const [r, w] of rings) {
+      if (ringSeen.has(ringKey(r, w))) continue;
+      ringSeen.add(ringKey(r, w));
       const size = Math.ceil(2 * r + w + 4);
       cell(ringKey(r, w), size, size, 0.5, 0.5, g => {
         g.strokeStyle = '#fff'; g.lineWidth = w;
@@ -188,12 +207,31 @@ export class GfxTextures {
       });
     }
 
-    // guns: dark barrel with lighter grip section; anchor puts the muzzle-side
-    // start 6px from the player center when rotated (matches old fillRect(6,…))
-    for (const [name, len] of [['gun-rifle', GUN_LEN.rifle], ['gun-pistol', GUN_LEN.pistol], ['gun-sniper', GUN_LEN.sniper]] as [string, number][]) {
-      cell(name, len, 5, -6 / len, 0.5, g => {
-        g.fillStyle = '#1a1e24'; g.fillRect(0, 0, len, 5);
-        g.fillStyle = '#2b323c'; g.fillRect(0, 0, 10, 5);
+    // Body walk frame sets — greyscale ramps tinted at runtime, every frame
+    // facing +x, baked at BODY_SS x the on-screen size and scaled down at draw
+    // time so rotating to arbitrary aim angles resamples cleanly.
+    for (const kind of BODY_KINDS) {
+      const R = BODY_RADIUS[kind] * BODY_SS;
+      const size = Math.ceil(2 * R) + 2;
+      const frames: (number | 'idle')[] = ['idle'];
+      for (let f = 0; f < WALK_FRAMES; f++) frames.push(f);
+      for (const f of frames) {
+        cell(bodyKey(kind, f), size, size, 0.5, 0.5, g => {
+          g.translate(size / 2, size / 2);
+          drawBody(g, kind, R, f === 'idle' ? null : (f as number) / WALK_FRAMES);
+        });
+      }
+    }
+
+    // guns: one distinct silhouette and palette per weapon, pre-coloured (never
+    // tinted). Baked at GUN_SS x so the detail survives rotation; the anchor is
+    // a fraction of the cell, so it is unaffected by the supersample and still
+    // places the grip end GUN_START world px in front of the player centre.
+    for (const id of Object.keys(WEAPONS) as WeaponId[]) {
+      const { len, h } = GUN_SPEC[id];
+      cell(gunKey(id), len * GUN_SS, h * GUN_SS, -GUN_START / len, 0.5, g => {
+        g.scale(GUN_SS, GUN_SS);
+        drawGun(g, id);
       });
     }
 
@@ -284,9 +322,17 @@ export class GfxTextures {
 
   // Real-art hook: if /assets/atlas.json (a Pixi spritesheet whose frame names
   // match the registry keys) exists, its textures replace the procedural bakes.
-  // Contract: bodies/rings/corpse parts/splats are tinted at runtime, so paint
-  // them white; anchors follow the registry (bodies centered, guns/tracer/flash
-  // left-middle). No atlas shipped -> the procedural look stands.
+  // Contract:
+  //  - body frames are `body-<player|walker|runner|brute>-<0..3|idle>`, drawn
+  //    facing +x, centred, and are TINTED at runtime — paint them as greyscale
+  //    luminance ramps (white = full team/type colour), not in final colours.
+  //  - the silhouette must stay inside the entity's collision radius
+  //    (PLAYER_RADIUS / ZOMBIE_RADII) scaled by BODY_SS.
+  //  - guns are `gun-<weaponId>` for all five weapons, pre-coloured (not
+  //    tinted), grip end at the left edge, and their frame width must match
+  //    GUN_SPEC[id].len or the muzzle flash will detach from the barrel.
+  //  - rings/corpse parts/splats are tinted too, so paint them white.
+  // No atlas shipped -> the procedural look stands.
   async tryLoadArtAtlas(): Promise<void> {
     try {
       const sheet = await loadArtSheet();

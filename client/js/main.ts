@@ -1,13 +1,15 @@
 import { Grid } from '../../shared/maps.ts';
-import { WEAPONS, PRIMARIES, fireIntervalMs } from '../../shared/weapons.ts';
+import { castPellet, type HitCircle } from '../../shared/hitscan.ts';
+import { PLAYER_RADIUS, ZOMBIE_RADII } from '../../shared/constants.ts';
+import { WEAPONS, PRIMARIES, fireIntervalMs, type WeaponId } from '../../shared/weapons.ts';
 import { Net } from './net.ts';
 import { Input } from './input.ts';
 import { GameState } from './state.ts';
 import { Renderer } from './render.ts';
 import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
-import { Hud } from './hud.ts';
-import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2 } from '../../shared/types.ts';
+import { Hud, weaponIconHtml } from './hud.ts';
+import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -26,6 +28,7 @@ let zombieCp = parseInt(localStorage.getItem('wz3-zombie-cp') || '0', 10) || 0;
 // local gun-feel mirror (server stays authoritative for damage/ammo)
 const gun = { cd: 0, spread: 0, sinceShot: 0, wasDown: false };
 let growlTimer = 2;
+let perfFrames = 0, perfSince = 0, perfFps = 0; // FPS counter (500ms window)
 let deadFollow: Vec2 | null = null; // spectate target pos in zombie mode
 let specIdx = 0;                    // spectate selection, advanced by click while down
 let specName: string | null = null; // name of the squadmate being spectated
@@ -34,6 +37,7 @@ let specName: string | null = null; // name of the squadmate being spectated
 const nameInput = $('name-input') as HTMLInputElement;
 nameInput.value = localStorage.getItem('wz3-name') || '';
 for (const b of document.querySelectorAll<HTMLButtonElement>('#loadout-opts button')) {
+  b.innerHTML = weaponIconHtml(b.dataset.w as WeaponId) + b.innerHTML;
   if (b.dataset.w === chosenPrimary) b.classList.add('sel');
   else if (chosenPrimary === 'rifle' && b.dataset.w === 'rifle') b.classList.add('sel');
   b.onclick = () => {
@@ -96,6 +100,7 @@ net.onWelcome = (m) => {
     renderer = r;
     running = true;
     lastFrame = performance.now();
+    perfSince = lastFrame; perfFrames = 0;
     requestAnimationFrame(loop);
   });
 };
@@ -119,7 +124,7 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
       if (e.id === myId || !renderer) break; // own shots predicted locally; renderer async at boot
       const sp = audio.spatial(e.x - cam.x, e.y - cam.y);
       audio.shot(e.w, sp.gain, sp.pan);
-      const tip = renderer.gunTip(e.x, e.y, e.p[0] ? e.p[0].a : 0);
+      const tip = renderer.gunTip(e.x, e.y, e.p[0] ? e.p[0].a : 0, e.w);
       fx.muzzle(tip.x, tip.y, e.p[0] ? e.p[0].a : 0);
       for (const pel of e.p) {
         fx.tracer(e.x, e.y, e.x + Math.cos(pel.a) * pel.d, e.y + Math.sin(pel.a) * pel.d, e.w);
@@ -196,6 +201,27 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
   }
 }
 
+// Bodies the locally-predicted tracer stops on — mirrors the server's
+// hitscanTargets (TDM: living, unprotected enemies; OUTBREAK: every zombie) so
+// own-shot tracers end on flesh instead of punching through to the wall behind.
+// Positions are the interpolated (render-time) ones, i.e. exactly the bodies the
+// player was looking at when they pulled the trigger.
+function tracerTargets(
+  interp: { players: PlayerSnap[]; zombies: ZombieSnap[] },
+  meSnap: PlayerSnap,
+): HitCircle[] {
+  const out: HitCircle[] = [];
+  if (mode === 'zombie') {
+    for (const z of interp.zombies) out.push({ x: z.x, y: z.y, radius: ZOMBIE_RADII[z.type] });
+  } else {
+    for (const p of interp.players) {
+      if (p.id === myId || p.team === meSnap.team || !p.alive || p.prot) continue;
+      out.push({ x: p.x, y: p.y, radius: PLAYER_RADIUS });
+    }
+  }
+  return out;
+}
+
 function camCenter(): Vec2 {
   if (!state || !state.pred) return { x: 0, y: 0 };
   return { x: state.pred.x, y: state.pred.y };
@@ -208,6 +234,18 @@ function loop(t: number): void {
   const dt = Math.min(0.05, Math.max(0.001, (t - lastFrame) / 1000));
   lastFrame = t;
 
+  // --- perf readout (before the early-out, so it keeps ticking while waiting
+  // for the first snapshot). FPS is a frame count over a 500ms window, not
+  // 1/dt, so a single hitched frame doesn't make the number jump.
+  net.pingTick(t);
+  perfFrames++;
+  if (t - perfSince >= 500) {
+    perfFps = Math.round((perfFrames * 1000) / (t - perfSince));
+    perfFrames = 0;
+    perfSince = t;
+  }
+  hud.perf(perfFps, Math.round(net.ping));
+
   const snap = state.latest;
   const self = snap ? snap.self : null;
   const meSnap = snap ? snap.players.find(p => p.id === myId) : null;
@@ -215,12 +253,13 @@ function loop(t: number): void {
 
   const alive = !!meSnap.alive;
   const inputAllowed = snap.state === 'live' || mode === 'zombie';
+  const interp = state.interpolated();
 
   // --- spectate / own position ---
   let mePos = state.myPos(dt) || { x: meSnap.x, y: meSnap.y };
   if (!alive) {
     if (mode === 'zombie') {
-      const living = state.interpolated().players.filter(p => p.alive && p.id !== myId);
+      const living = interp.players.filter(p => p.alive && p.id !== myId);
       if (living.length) {
         if (input.clicked && !hud.buyOpen) specIdx++;
         const target = living[specIdx % living.length];
@@ -264,12 +303,14 @@ function loop(t: number): void {
     let spr = (w.baseSpread + gun.spread);
     if (keys.w || keys.a || keys.s || keys.d) spr *= w.moveSpreadMult;
     spr = Math.min(spr, w.maxSpread);
-    const tip = renderer.gunTip(mePos.x, mePos.y, aim);
+    const tip = renderer.gunTip(mePos.x, mePos.y, aim, wid);
     fx.muzzle(tip.x, tip.y, aim);
+    const targets = tracerTargets(interp, meSnap);
     for (let i = 0; i < w.pellets; i++) {
       const a = aim + (Math.random() * 2 - 1) * spr;
-      const d = grid.raycast(mePos.x, mePos.y, Math.cos(a), Math.sin(a), w.range);
-      fx.tracer(mePos.x, mePos.y, mePos.x + Math.cos(a) * d, mePos.y + Math.sin(a) * d, wid);
+      const dx = Math.cos(a), dy = Math.sin(a);
+      const { dist: d } = castPellet(grid, mePos.x, mePos.y, dx, dy, w.range, targets);
+      fx.tracer(mePos.x, mePos.y, mePos.x + dx * d, mePos.y + dy * d, wid);
     }
     audio.shot(wid, 0.9, 0);
     fx.addShake(w.kick * 0.35);
@@ -302,7 +343,6 @@ function loop(t: number): void {
   }
 
   // --- ambient zombie growls ---
-  const interp = state.interpolated();
   if (mode === 'zombie' && interp.zombies.length) {
     growlTimer -= dt;
     if (growlTimer <= 0) {

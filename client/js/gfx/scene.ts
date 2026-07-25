@@ -3,6 +3,7 @@ import { AdvancedBloomFilter } from 'pixi-filters';
 import { PLAYER_RADIUS, TEAM } from '../../../shared/constants.ts';
 import type { PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
 import { DISC_R, GfxTextures, TEAM_COLORS, ZTYPE, gunKey, ringKey } from './textures.ts';
+import { BODY_SS, GUN_SS, HEAD, WALK_FRAMES, bodyKey, type BodyKind } from './art.ts';
 
 // Stage layer tree. Order is load-bearing (encodes the old painter's order):
 // world (lit, phase 2 darkens it) < light slot < worldFx (emissive/floats,
@@ -56,6 +57,31 @@ function makeBar(tx: GfxTextures, w: number, y: number): { bg: Sprite; fg: Sprit
 
 const NAME_STYLE = { fontFamily: 'system-ui, sans-serif', fontSize: 11 } as const;
 
+// World px of travel per walk frame. Distance-driven rather than time-driven, so
+// feet never skate: sprinting and frenzied zombies speed the cycle for free, and
+// an interpolation hitch can't advance a stationary entity's legs.
+const WALK_STEP_PX = 11;
+
+// Picks the walk frame for an entity from how far it has actually moved on
+// screen. Fed rendered positions (predicted for self, interpolated for remotes).
+class WalkCycle {
+  private px = NaN;
+  private py = NaN;
+  private acc = 0;
+  private still = 0;
+
+  frame(x: number, y: number): number | 'idle' {
+    if (!Number.isNaN(this.px)) {
+      const d = Math.hypot(x - this.px, y - this.py);
+      if (d < 0.05) this.still++;
+      else { this.still = 0; this.acc = (this.acc + d) % (WALK_STEP_PX * WALK_FRAMES); }
+    }
+    this.px = x; this.py = y;
+    if (this.still > 4) return 'idle'; // a few frames of hysteresis vs jitter
+    return Math.floor(this.acc / WALK_STEP_PX) % WALK_FRAMES;
+  }
+}
+
 class PlayerVisual {
   root = new Container();
   private prot: Sprite;
@@ -71,13 +97,16 @@ class PlayerVisual {
   private team = -1;
   private isMe = false;
   private weapon = '';
+  private cycle = new WalkCycle();
+  private frame: number | 'idle' | null = null;
 
   constructor(tx: GfxTextures) {
     this.tx = tx;
     this.prot = tx.sprite(ringKey(PLAYER_RADIUS + 5, 1));
-    this.gun = tx.sprite('gun-rifle');
-    this.body = tx.sprite('disc');
-    this.body.scale.set(PLAYER_RADIUS / DISC_R);
+    this.gun = tx.sprite(gunKey('rifle'));
+    this.gun.scale.set(1 / GUN_SS); // guns bake supersampled, see art.ts
+    this.body = tx.sprite(bodyKey('player', 'idle'));
+    this.body.scale.set(1 / BODY_SS); // baked supersampled, see art.ts
     this.edge = tx.sprite(ringKey(PLAYER_RADIUS, 3));
     this.dot = tx.sprite('disc');
     this.dot.scale.set(3 / DISC_R);
@@ -91,7 +120,8 @@ class PlayerVisual {
     this.reload = new Text({ text: 'reloading', style: { ...NAME_STYLE, fill: '#e8a53f' } });
     this.reload.anchor.set(0.5, 1);
     this.reload.position.set(0, PLAYER_RADIUS + 19);
-    this.root.addChild(this.prot, this.gun, this.body, this.edge, this.dot,
+    // gun sits ABOVE the body so it lands in the baked empty hands
+    this.root.addChild(this.prot, this.body, this.edge, this.gun, this.dot,
       this.name, this.barBg, this.barFg, this.reload);
   }
 
@@ -112,7 +142,13 @@ class PlayerVisual {
       this.gun.anchor.set(e.ax, e.ay);
     }
     if (this.name.text !== p.name) this.name.text = p.name;
+    const f = this.cycle.frame(x, y);
+    if (f !== this.frame) {
+      this.frame = f;
+      this.body.texture = this.tx.entry(bodyKey('player', f)).tex;
+    }
     this.root.position.set(x, y);
+    this.body.rotation = aim;
     this.gun.rotation = aim;
     this.dot.position.set(Math.cos(aim) * 7, Math.sin(aim) * 7);
     this.prot.visible = !!p.prot;
@@ -134,35 +170,34 @@ class ZombieVisual {
   root = new Container();
   type: ZombieSnap['type'];
   private fring: Sprite;
-  private claws: [Sprite, Sprite];
   private body: Sprite;
   private edge: Sprite;
   private eyes: [Sprite, Sprite];
   private barBg: Sprite;
   private barFg: Sprite;
   private r: number;
+  private tx: GfxTextures;
+  private cycle = new WalkCycle();
+  private frame: number | 'idle' | null = null;
 
   constructor(tx: GfxTextures, type: ZombieSnap['type']) {
+    this.tx = tx;
     this.type = type;
     const zt = ZTYPE[type] || ZTYPE.walker;
     this.r = zt.r;
     this.fring = tx.sprite(ringKey(zt.r + 5, 2.5));
     this.fring.tint = 0xff4030;
-    const claw = (): Sprite => {
-      const s = tx.sprite('disc');
-      s.scale.set((zt.r * 0.38) / DISC_R);
-      s.tint = zt.dark;
-      return s;
-    };
-    this.claws = [claw(), claw()];
-    this.body = tx.sprite('disc');
-    this.body.scale.set(zt.r / DISC_R);
+    // claws are baked into the body frames now — they are the animated arms
+    this.body = tx.sprite(bodyKey(type, 'idle'));
+    this.body.scale.set(1 / BODY_SS);
     this.body.tint = zt.color;
     this.edge = tx.sprite(ringKey(zt.r, 3));
     this.edge.tint = zt.dark;
+    // red eyes stay a separate overlay: the greyscale body takes one tint, so
+    // an off-hue detail cannot be baked in
     const eye = (): Sprite => {
       const s = tx.sprite('disc');
-      s.scale.set(2.2 / DISC_R);
+      s.scale.set(2.4 / DISC_R);
       s.tint = 0xff5040;
       return s;
     };
@@ -170,22 +205,28 @@ class ZombieVisual {
     const bar = makeBar(tx, 34, -zt.r - 9);
     this.barBg = bar.bg; this.barFg = bar.fg;
     this.barFg.tint = 0x8fd14f;
-    this.root.addChild(this.fring, this.claws[0], this.claws[1], this.body, this.edge,
+    this.root.addChild(this.fring, this.body, this.edge,
       this.eyes[0], this.eyes[1], this.barBg, this.barFg);
   }
 
   update(z: ZombieSnap, now: number): void {
     const r = this.r;
-    const wob = Math.sin(now / (z.fr ? 55 : 90) + z.id * 2.7) * 0.15;
     this.root.position.set(z.x, z.y);
+    const f = this.cycle.frame(z.x, z.y);
+    if (f !== this.frame) {
+      this.frame = f;
+      this.body.texture = this.tx.entry(bodyKey(this.type, f)).tex;
+    }
+    this.body.rotation = z.aim;
     this.fring.visible = !!z.fr;
     if (z.fr) this.fring.alpha = 0.45 + 0.3 * Math.sin(now / 80 + z.id);
-    const sides = [-0.5, 0.5];
+    // eyes ride the baked head, rotated with aim
+    const h = HEAD[this.type as BodyKind];
+    const ca = Math.cos(z.aim), sa = Math.sin(z.aim);
+    const hx = h.x * r, hy = h.y * r, hr = h.r * r;
     for (let i = 0; i < 2; i++) {
-      const a = z.aim + sides[i] + wob * sides[i] * 2;
-      this.claws[i].position.set(Math.cos(a) * r, Math.sin(a) * r);
-      const ea = z.aim + sides[i] * 0.7;
-      this.eyes[i].position.set(Math.cos(ea) * r * 0.62, Math.sin(ea) * r * 0.62);
+      const lx = hx + 0.30 * hr, ly = hy + (i ? 0.45 : -0.45) * hr;
+      this.eyes[i].position.set(lx * ca - ly * sa, lx * sa + ly * ca);
     }
     const hurt = z.hp < z.maxHp;
     this.barBg.visible = this.barFg.visible = hurt;

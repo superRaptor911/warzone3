@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WARZONE·3 — sprite bake preview</title>
+<style>
+  body { margin: 0; padding: 24px 28px 60px; background: #0a0c10; color: #cfd6df;
+    font: 13px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 17px; letter-spacing: 3px; margin: 0 0 4px; color: #f2f5f9; }
+  h2 { font-size: 12px; letter-spacing: 2px; color: #e8a53f; text-transform: uppercase;
+    margin: 26px 0 8px; border-bottom: 1px solid #1f2837; padding-bottom: 5px; }
+  p.note { color: #6b7687; margin: 0 0 6px; max-width: 78ch; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+  .cellbox { text-align: center; }
+  .cellbox span { display: block; font-size: 10px; color: #596374; letter-spacing: 1px; margin-top: 3px; }
+  canvas { background: #1a1e24; border: 1px solid #232c3a; border-radius: 3px; display: block; }
+  canvas.hud { background: #10151f; }
+  .kind { font-size: 11px; letter-spacing: 2px; color: #8b96a7; text-transform: uppercase;
+    margin: 14px 0 4px; }
+  label { color: #8b96a7; margin-right: 16px; user-select: none; }
+</style>
+</head>
+<body>
+<h1>SPRITE BAKE PREVIEW</h1>
+<p class="note">
+  Every shape here comes from <code>client/js/gfx/art.ts</code> — the same draw code the Pixi
+  atlas and the DOM weapon icons use. Bodies are baked as greyscale luminance ramps and tinted
+  at runtime (multiply), which this page emulates. The dashed ring is the collision radius:
+  no silhouette may cross it.
+</p>
+<p>
+  <label><input type="checkbox" id="ring" checked> hitbox ring</label>
+  <label><input type="checkbox" id="grey"> show raw greyscale ramp</label>
+  <label>zoom <input type="range" id="zoom" min="2" max="8" step="1" value="4"></label>
+</p>
+<div id="out"></div>
+
+<script type="module">
+import { BODY_KINDS, WALK_FRAMES, GUN_SPEC, drawBody, drawGun }
+  from '/js/gfx/art.ts';
+import { PLAYER_RADIUS, ZOMBIE_RADII } from '/shared/constants.ts';
+import { WEAPONS } from '/shared/weapons.ts';
+
+const RADIUS = {
+  player: PLAYER_RADIUS,
+  walker: ZOMBIE_RADII.walker,
+  runner: ZOMBIE_RADII.runner,
+  brute: ZOMBIE_RADII.brute,
+};
+// runtime tints from gfx/textures.ts (TEAM_COLORS.body / ZTYPE.color)
+const TINT = {
+  player: '#c94439', walker: '#5d8a42', runner: '#8fb457', brute: '#39602c',
+};
+
+const out = document.getElementById('out');
+const $ring = document.getElementById('ring');
+const $grey = document.getElementById('grey');
+const $zoom = document.getElementById('zoom');
+
+// Emulates a Pixi sprite tint: multiply the greyscale ramp by the colour, then
+// restore the original alpha mask (a bare multiply fill would flood the cell).
+function bodyCanvas(kind, R, ph, tint, ring) {
+  const size = Math.ceil(2 * R) + 10;
+  const grey = document.createElement('canvas');
+  grey.width = grey.height = size;
+  const g = grey.getContext('2d');
+  g.translate(size / 2, size / 2);
+  drawBody(g, kind, R, ph);
+
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  x.drawImage(grey, 0, 0);
+  if (tint) {
+    x.globalCompositeOperation = 'multiply';
+    x.fillStyle = tint;
+    x.fillRect(0, 0, size, size);
+    x.globalCompositeOperation = 'destination-in';
+    x.drawImage(grey, 0, 0);
+    x.globalCompositeOperation = 'source-over';
+  }
+  if (ring) {
+    x.translate(size / 2, size / 2);
+    x.strokeStyle = 'rgba(255,255,255,0.35)';
+    x.lineWidth = 1;
+    x.setLineDash([3, 3]);
+    x.beginPath(); x.arc(0, 0, R, 0, Math.PI * 2); x.stroke();
+  }
+  return c;
+}
+
+function box(canvas, label) {
+  const d = document.createElement('div');
+  d.className = 'cellbox';
+  d.appendChild(canvas);
+  const s = document.createElement('span');
+  s.textContent = label;
+  d.appendChild(s);
+  return d;
+}
+
+function section(title, note) {
+  const h = document.createElement('h2');
+  h.textContent = title;
+  out.appendChild(h);
+  if (note) {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = note;
+    out.appendChild(p);
+  }
+}
+
+function row(nodes) {
+  const r = document.createElement('div');
+  r.className = 'row';
+  for (const n of nodes) r.appendChild(n);
+  out.appendChild(r);
+  return r;
+}
+
+function render() {
+  out.innerHTML = '';
+  const Z = Number($zoom.value);
+  const ring = $ring.checked;
+  const tinted = !$grey.checked;
+
+  section('bodies — idle + 4-frame walk cycle',
+    'Frames advance on distance travelled (WALK_STEP_PX in gfx/scene.ts). All face +x, matching aim = 0.');
+  for (const kind of BODY_KINDS) {
+    const label = document.createElement('div');
+    label.className = 'kind';
+    label.textContent = `${kind} · radius ${RADIUS[kind]}px`;
+    out.appendChild(label);
+    const nodes = [box(bodyCanvas(kind, RADIUS[kind] * Z, null, tinted && TINT[kind], ring), 'idle')];
+    for (let f = 0; f < WALK_FRAMES; f++) {
+      nodes.push(box(bodyCanvas(kind, RADIUS[kind] * Z, f / WALK_FRAMES, tinted && TINT[kind], ring), `walk ${f}`));
+    }
+    row(nodes);
+  }
+
+  section('team tints — one greyscale bake, three teams',
+    'The whole silhouette shares a hue; off-hue details (zombie eyes, aim dot) are separate overlay sprites in gfx/scene.ts.');
+  row([
+    box(bodyCanvas('player', PLAYER_RADIUS * Z, 0.25, '#c94439', ring), 'red'),
+    box(bodyCanvas('player', PLAYER_RADIUS * Z, 0.25, '#3d6fc2', ring), 'blue'),
+    box(bodyCanvas('player', PLAYER_RADIUS * Z, 0.25, '#4c9e5f', ring), 'survivor'),
+  ]);
+
+  section('rotation resample check',
+    'Bodies bake at BODY_SS x on-screen size so arbitrary aim angles stay clean instead of aliasing.');
+  for (const kind of ['player', 'brute']) {
+    const nodes = [];
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const R = RADIUS[kind] * Z;
+      const size = Math.ceil(2 * R) + 10;
+      const src = bodyCanvas(kind, R, 0.25, tinted && TINT[kind], false);
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const x = c.getContext('2d');
+      x.translate(size / 2, size / 2);
+      x.rotate(a);
+      x.drawImage(src, -size / 2, -size / 2);
+      if (ring) {
+        x.rotate(-a);
+        x.strokeStyle = 'rgba(255,255,255,0.35)';
+        x.setLineDash([3, 3]);
+        x.beginPath(); x.arc(0, 0, R, 0, Math.PI * 2); x.stroke();
+      }
+      nodes.push(box(c, `${Math.round((a * 180) / Math.PI)}°`));
+    }
+    const label = document.createElement('div');
+    label.className = 'kind';
+    label.textContent = kind;
+    out.appendChild(label);
+    row(nodes);
+  }
+
+  section('weapons — world sprite (dark) and HUD icon (light)',
+    'One shape per weapon, two palettes. len also sets the muzzle offset used by Renderer.gunTip.');
+  for (const id of Object.keys(WEAPONS)) {
+    const { len, h } = GUN_SPEC[id];
+    const nodes = [];
+    for (const [forHud, cls, name] of [[false, '', 'world'], [true, 'hud', 'HUD icon']]) {
+      const c = document.createElement('canvas');
+      c.width = (len + 4) * Z; c.height = (h + 8) * Z;
+      c.className = cls;
+      const x = c.getContext('2d');
+      x.scale(Z, Z);
+      x.translate(2, 4);
+      drawGun(x, id, forHud);
+      nodes.push(box(c, name));
+    }
+    // world sprite at true on-screen size, to judge what actually reads in game
+    const t = document.createElement('canvas');
+    t.width = (len + 4) * 2; t.height = (h + 8) * 2;
+    const tx2 = t.getContext('2d');
+    tx2.scale(2, 2);
+    tx2.translate(2, 4);
+    drawGun(tx2, id, false);
+    nodes.push(box(t, 'in-game 2x'));
+    const label = document.createElement('div');
+    label.className = 'kind';
+    label.textContent = `${id} · ${WEAPONS[id].name} · len ${len}px`;
+    out.appendChild(label);
+    row(nodes);
+  }
+
+  section('gun in hands — world sprite over the player body',
+    'The gun is a separate sprite drawn above the body, anchored GUN_START px ahead of centre so it lands in the baked empty hands.');
+  const handNodes = [];
+  for (const id of Object.keys(WEAPONS)) {
+    const R = PLAYER_RADIUS * Z;
+    const size = Math.ceil(2 * R) + 10 + GUN_SPEC[id].len * Z;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = Math.ceil(2 * R) + 10;
+    const x = c.getContext('2d');
+    const cx = Math.ceil(R) + 5, cy = c.height / 2;
+    const body = bodyCanvas('player', R, null, tinted && TINT.player, false);
+    x.drawImage(body, cx - body.width / 2, cy - body.height / 2);
+    if (ring) {
+      x.save();
+      x.translate(cx, cy);
+      x.strokeStyle = 'rgba(255,255,255,0.35)';
+      x.setLineDash([3, 3]);
+      x.beginPath(); x.arc(0, 0, R, 0, Math.PI * 2); x.stroke();
+      x.restore();
+    }
+    x.save();
+    x.translate(cx, cy);
+    x.scale(Z, Z);
+    x.translate(9, -GUN_SPEC[id].h / 2); // GUN_START
+    drawGun(x, id, false);
+    x.restore();
+    handNodes.push(box(c, id));
+  }
+  row(handNodes);
+}
+
+for (const el of [$ring, $grey, $zoom]) el.addEventListener('input', render);
+render();
+</script>
+</body>
+</html>

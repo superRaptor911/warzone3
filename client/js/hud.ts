@@ -1,8 +1,19 @@
 import { SHOP, TEAM, STAMINA_MIN_TO_SPRINT, type ShopItemId } from '../../shared/constants.ts';
-import { WEAPONS } from '../../shared/weapons.ts';
+import { WEAPONS, type WeaponId } from '../../shared/weapons.ts';
+import { weaponIconDataUrl } from './gfx/art.ts';
 import type { GameMode, PlayerSnap, SelfSnap, Snapshot } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
+
+// DOM weapon icons come from the same draw functions as the world sprites
+// (gfx/art.ts), rasterised once per weapon to a data URL, so HUD and world can
+// never show different guns.
+const ICON_CACHE = new Map<WeaponId, string>();
+export function weaponIconHtml(id: WeaponId): string {
+  let url = ICON_CACHE.get(id);
+  if (!url) { url = weaponIconDataUrl(id); ICON_CACHE.set(id, url); }
+  return `<img class="wicon" src="${url}" alt="">`;
+}
 
 const BUY_ITEMS: { key: ShopItemId; label: string }[] = [
   { key: 'smg', label: 'Viper SMG' },
@@ -25,7 +36,10 @@ export class Hud {
   buyOpen: boolean;
   bannerT: ReturnType<typeof setTimeout> | undefined;
   shopHintDone = false; // set on first purchase; retires the armory hints
+  slotSig = '';         // last-rendered weapon-slot signature, see update()
   winded = false;       // sticky until stamina recovers past the sprint threshold
+  perfFps = -1;         // last-rendered perf numbers, see perf()
+  perfPing = -1;
 
   constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy }: HudHandlers) {
     this.mode = mode;
@@ -61,7 +75,9 @@ export class Hud {
     BUY_ITEMS.forEach((item, i) => {
       const row = document.createElement('div');
       row.dataset.key = item.key;
-      row.innerHTML = `<span><span class="num">${i + 1}</span>${item.label}</span>` +
+      const isWeapon = item.key !== 'ammo' && item.key !== 'health';
+      const ico = isWeapon ? weaponIconHtml(item.key as WeaponId) : '';
+      row.innerHTML = `<span><span class="num">${i + 1}</span>${ico}${item.label}</span>` +
         `<span class="cost">$${SHOP[item.key].cost}</span>`;
       row.onclick = () => onBuy(item.key);
       list.appendChild(row);
@@ -114,9 +130,14 @@ export class Hud {
     $('reserve').textContent = cur ? '/ ' + cur.reserve : '';
     const needReload = !!cur && cur.mag === 0 && cur.reserve > 0 && self.reloadT <= 0;
     $('reloadhint').classList.toggle('hidden', !needReload || !me.alive);
-    const slots = $('weapon-slots');
-    slots.innerHTML = self.slots.map((w, i) =>
-      `<span class="${i === self.slot ? 'active' : ''}">${i + 1} ${WEAPONS[w].name}</span>`).join('');
+    // Rebuild only on change: the rows now contain <img> icons, and recreating
+    // them every frame would thrash layout/decode 60x a second.
+    const sig = `${self.slots.join(',')}|${self.slot}`;
+    if (sig !== this.slotSig) {
+      this.slotSig = sig;
+      $('weapon-slots').innerHTML = self.slots.map((w, i) =>
+        `<span class="${i === self.slot ? 'active' : ''}">${i + 1} ${weaponIconHtml(w)}${WEAPONS[w].name}</span>`).join('');
+    }
     const rw = $('reloadwrap');
     if (self.reloadT > 0) {
       rw.classList.remove('hidden');
@@ -132,6 +153,23 @@ export class Hud {
         row.classList.toggle('owned', owned);
         row.classList.toggle('cant', !owned && self.points < SHOP[key].cost);
       }
+    }
+  }
+
+  // FPS/ping readout. Text is only touched when a value actually changes —
+  // this runs every frame and both numbers are updated on ~0.5s/1s timers.
+  perf(fps: number, ping: number): void {
+    if (fps !== this.perfFps) {
+      this.perfFps = fps;
+      const el = $('perf-fps');
+      el.textContent = `${fps} FPS`;
+      el.className = fps < 30 ? 'bad' : (fps < 50 ? 'warn' : '');
+    }
+    if (ping !== this.perfPing) {
+      this.perfPing = ping;
+      const el = $('perf-ping');
+      el.textContent = ping > 0 ? `${ping} ms` : '— ms';
+      el.className = ping >= 150 ? 'bad' : (ping >= 80 ? 'warn' : '');
     }
   }
 

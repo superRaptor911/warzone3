@@ -7,7 +7,7 @@ export const TICK_RATE = 30;          // server simulation Hz
 export const SNAPSHOT_EVERY = 2;      // send snapshot every N ticks (15 Hz)
 export const INTERP_DELAY_MS = 130;   // client render delay for remote entities
 
-export const PLAYER_RADIUS = 14;
+export const PLAYER_RADIUS = 17;
 export const PLAYER_SPEED = 175;      // px/s
 export const SPRINT_MULT = 1.42;
 export const STAMINA_MAX = 100;
@@ -19,7 +19,16 @@ export const RESPAWN_MS = 3000;
 export const SPAWN_PROTECT_MS = 2000;
 export const SWITCH_MS = 350;         // weapon switch delay
 
-export const ZOMBIE_RADIUS = 15;
+// Per-type collision radii — the single source of truth. The server builds
+// zombie stats from these (authoritative hitboxes) and the client bakes its
+// body frames and rings at the same values, so visuals can never drift from
+// the hitbox. Brute stays at 22: Outbreak's outer buildings have 1-tile
+// (TILE=48px) doors, and a diameter of 48 would jam it in every doorway.
+export const ZOMBIE_RADII: Record<ZombieTypeId, number> = {
+  walker: 17,
+  runner: 15,
+  brute: 22,
+};
 
 export const TDM_SCORE_LIMIT = 40;
 export const TDM_TIME_LIMIT_MS = 5 * 60 * 1000;

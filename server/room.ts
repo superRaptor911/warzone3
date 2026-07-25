@@ -1,5 +1,6 @@
 import { buildMap, type Grid } from '../shared/maps.ts';
 import { stepMove, tickSprint, dist } from '../shared/physics.ts';
+import { castPellet } from '../shared/hitscan.ts';
 import { WEAPONS, fireIntervalMs, damageAt, type Weapon, type WeaponId } from '../shared/weapons.ts';
 import {
   TICK_RATE, SNAPSHOT_EVERY, PLAYER_HP, SWITCH_MS, STAMINA_MAX,
@@ -156,17 +157,14 @@ export class Room {
     for (let i = 0; i < w.pellets; i++) {
       const a = p.aim + (Math.random() * 2 - 1) * spread;
       const dx = Math.cos(a), dy = Math.sin(a);
-      const wallDist = this.grid.raycast(p.x, p.y, dx, dy, w.range);
-      let best: Target | null = null, bestT = wallDist;
-      for (const tgt of this.hitscanTargets(p)) {
-        const t = rayCircle(p.x, p.y, dx, dy, tgt.x, tgt.y, tgt.radius);
-        if (t !== null && t < bestT) { bestT = t; best = tgt; }
-      }
-      pellets.push({ a: round2(a), d: Math.round(bestT) });
-      if (best) {
-        const dmg = damageAt(w, bestT);
-        const hx = p.x + dx * bestT, hy = p.y + dy * bestT;
-        this.damageTarget(best, dmg, p, w.id, hx, hy);
+      // Rebuilt per pellet on purpose: an earlier pellet may have killed a
+      // target, and a stale entry would be damaged (and credited) twice.
+      const { dist: hitDist, hit } = castPellet(this.grid, p.x, p.y, dx, dy, w.range, this.hitscanTargets(p));
+      pellets.push({ a: round2(a), d: Math.round(hitDist) });
+      if (hit) {
+        const dmg = damageAt(w, hitDist);
+        const hx = p.x + dx * hitDist, hy = p.y + dy * hitDist;
+        this.damageTarget(hit, dmg, p, w.id, hx, hy);
       }
     }
     this.event({ e: 'shot', id: p.id, x: Math.round(p.x), y: Math.round(p.y), w: w.id, p: pellets });
@@ -304,17 +302,6 @@ export class Room {
     const ws = this.clients.get(p.id);
     if (ws) { try { ws.send(JSON.stringify(obj)); } catch { /* ignore */ } }
   }
-}
-
-function rayCircle(ox: number, oy: number, dx: number, dy: number, cx: number, cy: number, r: number): number | null {
-  const mx = cx - ox, my = cy - oy;
-  const t = mx * dx + my * dy;
-  if (t < 0) return null;
-  const closestSq = mx * mx + my * my - t * t;
-  if (closestSq > r * r) return null;
-  const back = Math.sqrt(r * r - closestSq);
-  const hit = t - back;
-  return hit >= 0 ? hit : 0;
 }
 
 function round2(v: number): number { return Math.round(v * 100) / 100; }

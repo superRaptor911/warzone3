@@ -1,8 +1,9 @@
 // Direct room-level tests for match lifecycle transitions not covered by smoke.ts.
 import { TDMRoom } from '../server/tdm.ts';
 import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
-import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT } from '../shared/constants.ts';
+import { TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS } from '../shared/constants.ts';
 import { tickSprint } from '../shared/physics.ts';
+import { castPellet } from '../shared/hitscan.ts';
 
 let failures = 0;
 function check(cond: unknown, msg: string): void {
@@ -152,6 +153,40 @@ console.log('zombie frenzy');
   room.startWave(2);
   room.waveAge = 80;
   check(room.frenzyActive(), 'dragging a wave past 75s also triggers frenzy');
+  room.destroy();
+}
+
+// ---- shared hitscan: pellets stop on bodies, not only walls ----
+console.log('hitscan');
+{
+  const room = new TDMRoom('h1');
+  const grid = room.grid;
+  // find an open spot with clear space to the +x
+  let ox = 0, oy = 0;
+  outer: for (let ty = 1; ty < grid.h - 1; ty++) {
+    for (let tx = 1; tx < grid.w - 10; tx++) {
+      const x = tx * TILE + TILE / 2, y = ty * TILE + TILE / 2;
+      if (grid.raycast(x, y, 1, 0, 400) >= 400) { ox = x; oy = y; break outer; }
+    }
+  }
+  check(ox > 0, 'found an open lane to shoot down');
+  const clear = castPellet(grid, ox, oy, 1, 0, 400, []);
+  check(clear.dist >= 400 && clear.hit === null, 'unobstructed pellet flies its full range');
+  const body = { x: ox + 200, y: oy, radius: PLAYER_RADIUS };
+  const hit = castPellet(grid, ox, oy, 1, 0, 400, [body]);
+  check(hit.hit === body, 'pellet stops on a body in the lane');
+  check(Math.abs(hit.dist - (200 - PLAYER_RADIUS)) < 0.01,
+    `stops at the body's near edge (${hit.dist.toFixed(1)}px)`);
+  const grazePast = castPellet(grid, ox, oy, 1, 0, 400,
+    [{ x: ox + 200, y: oy + PLAYER_RADIUS + 2, radius: PLAYER_RADIUS }]);
+  check(grazePast.hit === null && grazePast.dist >= 400, 'a body beside the lane does not block');
+  const behind = castPellet(grid, ox, oy, 1, 0, 400, [{ x: ox - 100, y: oy, radius: PLAYER_RADIUS }]);
+  check(behind.hit === null, 'a body behind the shooter does not block');
+  const nearest = castPellet(grid, ox, oy, 1, 0, 400, [
+    { x: ox + 300, y: oy, radius: PLAYER_RADIUS },
+    body,
+  ]);
+  check(nearest.hit === body, 'nearest body wins');
   room.destroy();
 }
 
