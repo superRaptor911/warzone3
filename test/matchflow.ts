@@ -5,7 +5,7 @@ import {
   TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
   TICK_RATE, PLAYER_SPEED, PLAYER_HP,
 } from '../shared/constants.ts';
-import { T_FLOOR, type Grid } from '../shared/maps.ts';
+import { Grid, T_FLOOR } from '../shared/maps.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
@@ -14,6 +14,9 @@ import {
   newFireCadence, newFireGate, newLead, releaseAim, stickKeys, tickAimSmooth, tickFireCadence,
   tickFireGate, tickLead,
 } from '../client/js/stick.ts';
+import {
+  ASSIST_CONE, ASSIST_MAX_PULL, newAssist, releaseAssist, tickAimAssist,
+} from '../client/js/assist.ts';
 import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
 import { CONFIRM_GRACE, cancelReload, newReloadMirror, startReload, tickReload } from '../client/js/reload.ts';
 
@@ -21,6 +24,11 @@ let failures = 0;
 function check(cond: unknown, msg: string): void {
   if (cond) console.log('  ok:', msg);
   else { failures++; console.error('  FAIL:', msg); }
+}
+
+/** Degrees wrapped to (-180, 180], so a pull across the seam reads as a delta. */
+function wrapDeg(d: number): number {
+  return d - 360 * Math.floor((d + 180) / 360);
 }
 
 // Centre of a run of clear floor tiles, so tests can place entities without a
@@ -629,6 +637,124 @@ console.log('\ntouch aim easing');
     prev = mono.a;
   }
   check(ok, 'the ease rises monotonically and never overshoots the target');
+}
+
+// ---- touch: aim assist ----
+// A target's angular size falls as 1/distance but the thumb's noise floor does
+// not, so past ~500px an enemy is narrower than the ~2deg the aim ease leaves
+// behind and no amount of steadiness holds a crosshair on it. The pull is sized
+// to erase exactly that, and to fade out where it isn't needed.
+console.log('\ntouch aim assist');
+{
+  const DEG = Math.PI / 180;
+  // A synthetic all-floor arena for the geometry: a real map has no 1800px
+  // sightline, and a wall silently eating the pull would make these checks
+  // measure LOS instead of the maths. The real map is used for the LOS test
+  // below, which is the one that actually wants walls.
+  const g = new Grid(140, 140);
+  const me = { x: g.pxW() / 2, y: g.pxH() / 2 };
+  const at = (dist: number, offDeg: number, radius = PLAYER_RADIUS) => ({
+    x: me.x + Math.cos(offDeg * DEG) * dist,
+    y: me.y + Math.sin(offDeg * DEG) * dist,
+    radius,
+  });
+  // aim due east; a target `offDeg` off that is `offDeg` of error
+  const pull = (dist: number, offDeg: number, radius = PLAYER_RADIUS, range = 2000) => {
+    const st = newAssist();
+    const out = tickAimAssist(st, 0, me.x, me.y, [at(dist, offDeg, radius)], range, g);
+    return wrapDeg(out / DEG);
+  };
+
+  // 1. the headline claim: at rifle range the pull all but erases the residual
+  // wobble, taking the aim from 2deg off to a fraction of the target's width
+  const half800 = Math.atan2(PLAYER_RADIUS, 800) / DEG;
+  const res800 = 2 - pull(800, 2);
+  check(res800 < half800,
+    `at 800px a 2deg wobble is pulled inside the target (${res800.toFixed(2)}deg left, target half-width ${half800.toFixed(2)}deg)`);
+  const half1800 = Math.atan2(PLAYER_RADIUS, 1800) / DEG;
+  const res1800 = 2 - pull(1800, 2);
+  check(res1800 < half1800,
+    `and at sniper range too (${res1800.toFixed(2)}deg left, half-width ${half1800.toFixed(2)}deg)`);
+
+  // 2. ...while up close it barely acts, because a 12.9deg target needs no help
+  const near = pull(150, 2);
+  check(near < 0.5, `at 150px the pull is negligible (${near.toFixed(2)}deg of a 2deg error)`);
+  check(pull(800, 2) > near * 4, 'the pull scales with how much the target needs it');
+
+  // 3. bounded by construction — err*(1-|err|/cone) peaks at cone/4. This is
+  // what stops it becoming a lock: a deliberate thumb always outvotes it.
+  let peak = 0;
+  for (let o = -25; o <= 25; o += 0.25) peak = Math.max(peak, Math.abs(pull(1800, o)));
+  const bound = ASSIST_MAX_PULL / DEG;
+  check(peak <= bound + 1e-6,
+    `the bend never exceeds cone/4 (peak ${peak.toFixed(2)}deg, bound ${bound.toFixed(2)}deg)`);
+  // two-sided: the bound must be tight, or it is documenting a limit the code
+  // never approaches and would not catch a strength change
+  check(peak > bound * 0.98, `and the bound is tight, not decorative (${peak.toFixed(2)} vs ${bound.toFixed(2)})`);
+
+  // 4. no pull outside the cone, and none at the boundary either — a step there
+  // would be a snap the player did not ask for
+  check(pull(800, ASSIST_CONE / DEG + 1) === 0, 'a target outside the cone is ignored');
+  check(Math.abs(pull(800, ASSIST_CONE / DEG)) < 1e-9, 'and the pull reaches zero at the cone edge, not a step');
+
+  // 5. always toward the target, never away
+  check(pull(800, 5) > 0 && pull(800, -5) < 0, 'the pull is signed toward the target');
+
+  // 6. weapon range gates it: a shotgun must not be helped with a shot that
+  // cannot reach. 420px is the shotgun's range.
+  check(pull(600, 3, PLAYER_RADIUS, 420) === 0, 'a target beyond the weapon range is ignored');
+  check(pull(400, 3, PLAYER_RADIUS, 420) > 0, 'and one inside it is not');
+
+  // 7. never through a wall — that would hand mobile information the renderer
+  // deliberately withholds. Uses a REAL map, and finds a real solid tile with
+  // floor on both sides of it.
+  const real = new TDMRoom('assist').grid;
+  let blocked: { from: { x: number; y: number }; to: { x: number; y: number } } | null = null;
+  for (let ty = 1; ty < real.h - 1 && !blocked; ty++) {
+    for (let tx = 2; tx < real.w - 2; tx++) {
+      if (real.get(tx, ty) === T_FLOOR
+        || real.get(tx - 1, ty) !== T_FLOOR || real.get(tx + 1, ty) !== T_FLOOR) continue;
+      blocked = {
+        from: { x: (tx - 1 + 0.5) * TILE, y: (ty + 0.5) * TILE },
+        to: { x: (tx + 1 + 0.5) * TILE, y: (ty + 0.5) * TILE },
+      };
+      break;
+    }
+  }
+  check(blocked !== null, 'found a wall with floor either side to test LOS against');
+  if (blocked) {
+    const wallAim = Math.atan2(blocked.to.y - blocked.from.y, blocked.to.x - blocked.from.x);
+    const tgt = { x: blocked.to.x, y: blocked.to.y, radius: PLAYER_RADIUS };
+    const st = newAssist();
+    const out = tickAimAssist(st, wallAim + 2 * DEG, blocked.from.x, blocked.from.y, [tgt], 2000, real);
+    check(out === wallAim + 2 * DEG, 'a target behind a wall gets no pull');
+    check(!st.has, 'and is not remembered as the sticky target');
+    // ...and the same target with the wall gone does get one, so the check above
+    // is really about LOS and not about the geometry being out of cone
+    const open = newAssist();
+    const clear = tickAimAssist(open, wallAim + 2 * DEG, blocked.from.x, blocked.from.y, [tgt], 2000, g);
+    check(clear !== wallAim + 2 * DEG, 'while the identical geometry in the open is assisted');
+  }
+
+  // 8. stickiness. Two targets either side of the crosshair: without hysteresis
+  // the pull changes sign the moment the nearer one swaps, which is a wobble of
+  // its own. The one chosen last frame keeps its claim through a small swap.
+  const left = at(800, -4), right = at(800, 4.4);
+  const st = newAssist();
+  const first = tickAimAssist(st, 0, me.x, me.y, [left, right], 2000, g);
+  check(first < 0, 'the nearer of two targets takes the pull');
+  // now make the other marginally nearer — inside the stick bonus, so no flip
+  const swap = tickAimAssist(st, 0, me.x, me.y, [at(800, -4.6), at(800, 4)], 2000, g);
+  check(swap < 0, 'a marginal swap does not flip the pull to the other target');
+  // a decisive difference still wins, or the assist could never change target
+  const decisive = tickAimAssist(st, 0, me.x, me.y, [at(800, -14), at(800, 1)], 2000, g);
+  check(decisive > 0, 'a clearly better target does take over');
+
+  // 9. an empty target set is the common case (nobody in view) and must be free
+  const none = newAssist();
+  check(tickAimAssist(none, 1.234, me.x, me.y, [], 2000, g) === 1.234, 'no targets means no change');
+  releaseAssist(st);
+  check(!st.has, 'releaseAssist drops the sticky target');
 }
 
 // ---- touch: eased camera lead ----

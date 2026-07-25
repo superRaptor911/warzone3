@@ -10,7 +10,8 @@ import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
-import { newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
+import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
+import { newAssist, releaseAssist, tickAimAssist } from './assist.ts';
 import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
 import type { GameEvent, GameMode, InputMsg, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
@@ -66,6 +67,8 @@ const TOUCH_LEAD = 140;
 // chase the cursor instead of tracking it.
 const LEAD_TAU = 0.08;
 const camLead = newLead();
+// aim assist state (target stickiness); touch only
+const assist = newAssist();
 // where the reticle sits along the aim ray, in world px
 const CROSS_DIST = 200;
 
@@ -401,6 +404,14 @@ function loop(t: number): void {
     }
   }
 
+  // Resolved before the aim block rather than after it: aim assist takes the
+  // equipped weapon's range, so a shot it helps with is one that could land.
+  const wid = self.slots[self.slot];
+  const w = WEAPONS[wid];
+  // One build per frame, shared by aim assist and the local tracer mirror —
+  // both want the same thing, the targets as they currently *appear*.
+  const targets = tracerTargets(interp, meSnap);
+
   // --- aim ---
   // Screen sizes are CSS px (autoDensity); `zoom` is world px per screen px and
   // is 1 on any desktop-sized viewport, so this is the original math there.
@@ -413,6 +424,16 @@ function loop(t: number): void {
     // camera pulls the way you are aiming, scaled by how hard you push
     touch.tick(dt); // ease the angle before anything reads it
     aim = touch.aim;
+    // Aim assist, touch only: a bounded pull toward the enemy nearest the
+    // crosshair, and only while the stick is engaged — with the thumb off the
+    // pads there is nothing to assist, and a pull would drift the crosshair
+    // while merely running. Applied here so the camera, the reticle, the body
+    // and the wire message all agree on one angle.
+    if (touch.deflect >= DEAD_ZONE) {
+      aim = tickAimAssist(assist, aim, mePos.x, mePos.y, targets, w.range, grid);
+    } else {
+      releaseAssist(assist);
+    }
     // eased, not applied raw: `aim` survives a release but `deflect` does not,
     // so the raw target steps to zero the instant the thumb lifts
     lead = tickLead(
@@ -436,9 +457,6 @@ function loop(t: number): void {
     };
     aim = Math.atan2(mouseWorld.y - mePos.y, mouseWorld.x - mePos.x);
   }
-
-  const wid = self.slots[self.slot];
-  const w = WEAPONS[wid];
 
   // --- build + send input ---
   // Both sources are read whenever the pads are up, so a phone with a
@@ -507,7 +525,6 @@ function loop(t: number): void {
     spr = Math.min(spr, w.maxSpread);
     const tip = renderer.gunTip(mePos.x, mePos.y, aim, wid);
     fx.muzzle(tip.x, tip.y, aim);
-    const targets = tracerTargets(interp, meSnap);
     for (let i = 0; i < w.pellets; i++) {
       const a = aim + (Math.random() * 2 - 1) * spr;
       const dx = Math.cos(a), dy = Math.sin(a);
