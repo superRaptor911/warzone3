@@ -25,8 +25,6 @@ const BUY_ITEMS: { key: ShopItemId; label: string }[] = [
 ];
 
 export interface HudHandlers {
-  onAddBot: (team: 'mine' | 'enemy') => void;
-  onRemoveBot: (team: 'mine' | 'enemy') => void;
   onBuy: (item: ShopItemId) => void;
   onQuit: () => void;
 }
@@ -49,7 +47,7 @@ export class Hud {
   perfPing = NaN;       // NaN, not -1: -1 is a real ping value ("no pong yet")
   centerHtml: string | null = null; // last-rendered centre overlay, see centerMsg()
 
-  constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy, onQuit }: HudHandlers) {
+  constructor(mode: GameMode, { onBuy, onQuit }: HudHandlers) {
     this.mode = mode;
     this.onBuy = onBuy;
     this.buyOpen = false;
@@ -67,35 +65,6 @@ export class Hud {
     $('pz-no').onclick = (e) => { e.preventDefault(); this.confirmQuit(false); };
     $('pz-yes').onclick = (e) => { e.preventDefault(); onQuit(); };
     $('bm-close').onclick = (e) => { e.preventDefault(); this.toggleBuy(false); };
-
-    // bot buttons. On touch the list collapses behind a single toggle: at
-    // right/50% the expanded stack sits exactly under the aim thumb.
-    const bar = $('botbar');
-    bar.innerHTML = '';
-    bar.classList.remove('open');
-    const toggle = document.createElement('button');
-    toggle.className = 'bb-toggle';
-    toggle.textContent = 'BOTS';
-    toggle.onclick = (e) => { e.preventDefault(); bar.classList.toggle('open'); toggle.blur(); };
-    bar.appendChild(toggle);
-    const botList = document.createElement('div');
-    botList.className = 'bb-list';
-    bar.appendChild(botList);
-    const btn = (label: string, fn: () => void) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.onclick = (e) => { e.preventDefault(); fn(); b.blur(); };
-      botList.appendChild(b);
-    };
-    if (mode === 'tdm') {
-      btn('+ BOT ALLY', () => onAddBot('mine'));
-      btn('+ BOT ENEMY', () => onAddBot('enemy'));
-      btn('− BOT ALLY', () => onRemoveBot('mine'));
-      btn('− BOT ENEMY', () => onRemoveBot('enemy'));
-    } else {
-      btn('+ BOT SQUADMATE', () => onAddBot('mine'));
-      btn('− BOT SQUADMATE', () => onRemoveBot('mine'));
-    }
 
     // buy items
     const list = $('buy-items');

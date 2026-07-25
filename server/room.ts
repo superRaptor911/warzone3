@@ -68,6 +68,14 @@ export class Room {
   state: RoomState;
   history: HistoryFrame[];
   interval: NodeJS.Timeout;
+  /**
+   * Roster the room's creator asked for, held so it can be restored later.
+   * Set once, when the joining human is the one who created the room; every
+   * later joiner inherits the room as it stands. Meaning is per mode — a
+   * per-team target in TDM, a total squad size in zombie — because those are
+   * the units each mode's `fillBots` counts in.
+   */
+  botTarget: number;
 
   constructor(id: string, mode: GameMode, mapName: string) {
     this.id = id;
@@ -81,6 +89,7 @@ export class Room {
     this.now = Date.now();
     this.state = 'live';
     this.history = [];
+    this.botTarget = 0;
     this.interval = setInterval(() => this.update(), 1000 / TICK_RATE);
   }
 
@@ -323,6 +332,14 @@ export class Room {
   // consumed by matchmaking (index.ts)
   addPlayer(_opts: AddPlayerOpts): Player | null { return null; }
   removeBot(_team?: number): boolean { return false; }
+  /**
+   * Top the roster back up to `botTarget` with bots. Called when the room is
+   * created and again whenever a human leaves — a human joining a full team
+   * evicts a bot, so without the second call the roster only ever decays.
+   * Never removes anyone: a room with more players than the target is a room
+   * humans filled, which is the outcome the target was standing in for.
+   */
+  fillBots(): void {}
   // consumed by botThink
   botEnemies(_p: Player): Target[] { return []; }
   botGoal(_p: Player): Vec2 | null { return null; }

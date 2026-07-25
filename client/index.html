@@ -69,6 +69,17 @@
             <button data-t="off">OFF</button>
           </div>
         </div>
+        <!-- Bots are chosen here rather than in-game because only the player
+             who *creates* a room sets its roster; a later joiner inherits it.
+             One generic row, resolved per mode on the mode-card tap. -->
+        <div class="set-row" id="bots-row">
+          <span class="loadout-label">bots</span>
+          <div id="bots-opts">
+            <button data-b="none">NONE</button>
+            <button data-b="few">FEW</button>
+            <button data-b="full">FULL</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -106,8 +117,6 @@
     <div id="reloadwrap" class="hidden"><div id="reloadbar"></div></div>
   </div>
 
-  <div id="botbar"></div>
-
   <div id="buymenu" class="hidden cut">
     <h3><span class="bm-t">ARMORY</span><span class="bm-pts"></span><button id="bm-close" aria-label="close">&times;</button></h3>
     <div id="buy-items"></div>
@@ -144,7 +153,7 @@
 
 <!-- Touch controls sit BELOW #hud (z-index 9 vs 10): #hud is pointer-events:none
      except for its interactive children, so pad drags fall through while the
-     armory rows, bot bar and topbar keep taking their own taps. -->
+     armory rows and the topbar keep taking their own taps. -->
 <div id="touch" class="hidden">
   <div id="dpad">
     <span class="dp dp-w"></span><span class="dp dp-a"></span>

@@ -6,9 +6,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { TDMRoom } from './tdm.ts';
 import { ZombieRoom } from './zombie.ts';
-import { nextBotName } from './bot.ts';
-import { TEAM, MAX_TEAM_SIZE, MAX_SURVIVORS } from '../shared/constants.ts';
-import { PRIMARIES, WEAPONS, isPrimary } from '../shared/weapons.ts';
+import { MAX_TEAM_SIZE, MAX_SURVIVORS } from '../shared/constants.ts';
+import { WEAPONS, isPrimary } from '../shared/weapons.ts';
 import type { GameMode } from '../shared/types.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,17 +55,30 @@ type GameSocket = WebSocket & { meta?: SocketMeta | null; isAlive?: boolean };
 const rooms = new Map<string, GameRoom>();
 let roomCounter = 1;
 
-function findRoom(mode: GameMode): GameRoom {
+// `created` matters to the caller: the bot roster on a join message is only
+// honored by the player who brought the room into existence (the same rule
+// ZombieRoom.applyCheckpoint uses), so a later joiner inherits the match as it
+// stands instead of reshaping someone else's game.
+function findRoom(mode: GameMode): { room: GameRoom; created: boolean } {
   for (const room of rooms.values()) {
     if (room.mode !== mode) continue;
-    if (mode === 'tdm' && room.humanCount() < MAX_TEAM_SIZE * 2) return room;
-    if (mode === 'zombie' && room.humanCount() < MAX_SURVIVORS) return room;
+    if (mode === 'tdm' && room.humanCount() < MAX_TEAM_SIZE * 2) return { room, created: false };
+    if (mode === 'zombie' && room.humanCount() < MAX_SURVIVORS) return { room, created: false };
   }
   const id = `${mode}-${roomCounter++}`;
   const room = mode === 'tdm' ? new TDMRoom(id) : new ZombieRoom(id);
   rooms.set(id, room);
   console.log(`[room] created ${id}`);
-  return room;
+  return { room, created: true };
+}
+
+// Roster target off the wire. Untrusted: coerced, floored and capped at the
+// mode's own maximum, so nothing here can ask for a room bigger than the mode
+// supports. A per-team target in TDM, a total squad size in zombie.
+function botTargetOf(raw: unknown, mode: GameMode): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, mode === 'tdm' ? MAX_TEAM_SIZE : MAX_SURVIVORS);
 }
 
 function leaveRoom(ws: GameSocket): void {
@@ -83,7 +95,12 @@ function leaveRoom(ws: GameSocket): void {
     room.destroy();
     rooms.delete(room.id);
     console.log(`[room] closed ${room.id}`);
+    return;
   }
+  // A human joining a full team evicted a bot to get in; when they leave, the
+  // seat stays empty unless we refill it. There is no in-game bot control any
+  // more, so without this the roster only ever decays.
+  room.fillBots();
 }
 
 function sanitizeName(raw: unknown): string {
@@ -108,11 +125,14 @@ wss.on('connection', (socket) => {
     if (!ws.meta) {
       if (m.t !== 'join') return;
       const mode: GameMode = m.mode === 'zombie' ? 'zombie' : 'tdm';
-      const room = findRoom(mode);
+      const { room, created } = findRoom(mode);
       const primary = isPrimary(m.primary) ? m.primary : 'rifle';
       const p = room.addPlayer({ name: sanitizeName(m.name), bot: false, primary });
       if (!p) { ws.send(JSON.stringify({ t: 'full' })); ws.close(); return; }
       room.clients.set(p.id, ws);
+      // Roster is set after the human is in, so TDM balances the bots around
+      // whichever team they landed on.
+      if (created) { room.botTarget = botTargetOf(m.bots, mode); room.fillBots(); }
       if (room.mode === 'zombie') room.applyCheckpoint(m.cp);
       ws.meta = { room, playerId: p.id };
       ws.send(JSON.stringify({
@@ -151,31 +171,6 @@ wss.on('connection', (socket) => {
           p.slots[1] = w;
           p.ammo[w] = { mag: WEAPONS[w].mag, reserve: WEAPONS[w].reserve };
           if (p.alive && p.slot !== 1) room.trySwitch(p, 1);
-        }
-        break;
-      }
-      case 'addBot': {
-        if (room.mode === 'tdm') {
-          const team = m.team === 'enemy'
-            ? (p.team === TEAM.RED ? TEAM.BLUE : TEAM.RED)
-            : p.team;
-          room.addPlayer({
-            name: nextBotName(), bot: true, team,
-            primary: PRIMARIES[Math.floor(Math.random() * PRIMARIES.length)],
-          });
-        } else {
-          room.addPlayer({ name: nextBotName(), bot: true });
-        }
-        break;
-      }
-      case 'removeBot': {
-        if (room.mode === 'tdm') {
-          const team = m.team === 'enemy'
-            ? (p.team === TEAM.RED ? TEAM.BLUE : TEAM.RED)
-            : p.team;
-          room.removeBot(team);
-        } else {
-          room.removeBot();
         }
         break;
       }

@@ -446,8 +446,6 @@ check(cv[0] === 1920 && cv[1] === 1080, `backing store 1:1 at DPR 1 (${cv[0]}x${
 check(cv[2] === '1920px' && cv[3] === '1080px', `autoDensity sets the CSS size (${cv[2]} x ${cv[3]})`);
 check(await page.evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--s').trim() === '1'`),
   'HUD scale is 1 on a desktop viewport');
-check(await page.evaluate(`getComputedStyle(document.querySelector('.bb-toggle')).display === 'none'`),
-  'bot bar is not collapsed on desktop');
 
 const dm0 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
 await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1200, y: 400, button: 'left', clickCount: 1, buttons: 1 });

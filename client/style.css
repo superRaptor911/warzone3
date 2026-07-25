@@ -132,12 +132,12 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
 .set-row { display: flex; align-items: center; gap: 12px; }
 .loadout-label { flex: 0 0 62px; font-size: 10px; letter-spacing: 3px; color: var(--ink-faint);
   text-transform: uppercase; }
-#loadout-opts, #gfx-opts, #touch-opts { display: flex; gap: 4px; flex-wrap: wrap; }
-#loadout-opts button, #gfx-opts button, #touch-opts button { padding: 7px 11px; min-height: 32px;
+#loadout-opts, #gfx-opts, #touch-opts, #bots-opts { display: flex; gap: 4px; flex-wrap: wrap; }
+#loadout-opts button, #gfx-opts button, #touch-opts button, #bots-opts button { padding: 7px 11px; min-height: 32px;
   display: inline-flex; align-items: center; background: #0e1113; color: var(--ink-dim);
   border: 1px solid #2b3036; cursor: pointer; font-size: 11px; letter-spacing: 1px; font-family: var(--ff); }
-#loadout-opts button:hover, #gfx-opts button:hover, #touch-opts button:hover { color: var(--ink); border-color: #454c54; }
-#loadout-opts button.sel, #gfx-opts button.sel, #touch-opts button.sel { color: #fff;
+#loadout-opts button:hover, #gfx-opts button:hover, #touch-opts button:hover, #bots-opts button:hover { color: var(--ink); border-color: #454c54; }
+#loadout-opts button.sel, #gfx-opts button.sel, #touch-opts button.sel, #bots-opts button.sel { color: #fff;
   border-color: var(--blood-lit); background: #241416; }
 
 .mc-foot { margin-top: 18px; border-top: 1px solid #23272c; padding-top: 12px; }
@@ -158,11 +158,11 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
   .mode-card { padding: 18px 20px; min-height: 96px; }
   .mc-main { margin-top: 4px; }
   /* Rows stay horizontal even here. Stacking the label above its buttons reads
-     better but costs ~57px over three rows, which is exactly what pushed the
+     better but costs ~76px over four rows, which is exactly what pushed the
      card past a 844px-tall phone into scrolling. */
   .settings { gap: 10px; margin-top: 4px; }
-  #loadout-opts, #gfx-opts, #touch-opts { flex: 1; }
-  #loadout-opts button, #gfx-opts button, #touch-opts button { flex: 1; min-height: 44px;
+  #loadout-opts, #gfx-opts, #touch-opts, #bots-opts { flex: 1; }
+  #loadout-opts button, #gfx-opts button, #touch-opts button, #bots-opts button { flex: 1; min-height: 44px;
     justify-content: center; font-size: 12px; }
   .mc-foot { margin-top: auto; padding-top: 16px; }
 }
@@ -185,7 +185,7 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
   .mode-card .mode-desc { font-size: 10px; line-height: 1.4; }
   .mode-card .mc-go { margin-top: 6px; }
   .settings { gap: 5px; }
-  #loadout-opts button, #gfx-opts button, #touch-opts button { padding: 5px 8px; min-height: 28px; font-size: 10px; }
+  #loadout-opts button, #gfx-opts button, #touch-opts button, #bots-opts button { padding: 5px 8px; min-height: 28px; font-size: 10px; }
   .help { font-size: 10px; }
   #conn-status { margin-top: 4px; }
 }
@@ -280,13 +280,6 @@ body.touch #killfeed { top: 62px; }
 #reloadwrap { width: calc(160px * var(--s)); height: 5px; background: #1a1d21; margin-top: 5px; margin-left: auto; }
 #reloadbar { height: 100%; width: 0%; background: #e8a53f; }
 
-#botbar { position: absolute; right: calc(20px * var(--s)); top: 50%; transform: translateY(-50%);
-  display: flex; flex-direction: column; gap: 6px; }
-#botbar button { pointer-events: auto; padding: 7px 12px; font-size: calc(12px * var(--s));
-  background: rgba(14,17,19,.88); color: #b6c0cf; border: 1px solid var(--edge);
-  cursor: pointer; letter-spacing: 1px; font-family: var(--ff); }
-#botbar button:hover { border-color: #e8a53f; color: #fff; }
-
 /* ---------- in-game panels ---------- */
 #buymenu, #scoreboard, #pause { --c: 12px; position: absolute; left: 50%; top: 50%;
   transform: translate(-50%,-50%); pointer-events: auto; }
@@ -354,7 +347,7 @@ body.touch #killfeed { top: 62px; }
 /* ---------- touch controls ---------- */
 /* z-index 9 keeps the pads under #hud, which is pointer-events:none except for
    its interactive children — so drags fall through to here, but a tap on the
-   armory or the bot bar still hits the HUD. */
+   armory still hits the HUD. */
 #touch { position: absolute; inset: 0; z-index: 9; touch-action: none;
   -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 /* the pads and the orientation gate belong to a running match, not the menu —
@@ -399,7 +392,6 @@ body.touch #killfeed { top: 62px; }
 /* ---------- touch-mode HUD adjustments ---------- */
 body.touch #game { cursor: none; }
 body.touch #topbar { pointer-events: auto; }          /* tap to toggle the scoreboard */
-body.touch #botbar { top: 28%; transform: none; }     /* out of the aim-thumb arc */
 /* The bottom-left corner belongs to the dpad, so the left side stacks into three
    non-overlapping bands: minimap (16..100), health/stamina/points (108..150),
    then the pad in the corner with its buttons beside it rather than above. */
@@ -408,11 +400,6 @@ body.touch #tbtns-left { left: calc(180px + env(safe-area-inset-left)); bottom: 
 /* these name keys a touch player does not have, and both now have real buttons
    a thumb's width away */
 body.touch #shophint, body.touch #reloadhint { display: none; }
-.bb-toggle { display: none; }
-body.touch .bb-toggle { display: block; }
-body.touch #botbar .bb-list { display: none; flex-direction: column; gap: 6px; margin-top: 6px; }
-body.touch #botbar.open .bb-list { display: flex; }
-#botbar .bb-list { display: flex; flex-direction: column; gap: 6px; }
 .kbd-only { display: revert; }
 body.touch .kbd-only { display: none; }
 .cm-btns { display: none; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }

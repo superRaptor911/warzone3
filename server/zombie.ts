@@ -1,6 +1,6 @@
 import { Room, type AddPlayerOpts, type Target } from './room.ts';
 import { createPlayer, refillAmmo, createZombie, setPrimary, makeAmmo, type Player, type Zombie } from './entities.ts';
-import { createBotController } from './bot.ts';
+import { createBotController, nextBotName } from './bot.ts';
 import { findPath } from './pathfinding.ts';
 import { dist, stepToward, resolveCircleAxis } from '../shared/physics.ts';
 import {
@@ -89,6 +89,15 @@ export class ZombieRoom extends Room {
     p.protectT = SPAWN_PROTECT_MS / 1000;
     this.event({ e: 'join', name: p.name, team: TEAM.SURVIVOR });
     return p;
+  }
+
+  // One squad, so `botTarget` is the whole roster: "2 squadmates" is a target
+  // of 3, and three humans in the room means no bots at all. addPlayer returns
+  // null at MAX_SURVIVORS, which is what stops the loop.
+  override fillBots(): void {
+    while (this.players.size < this.botTarget) {
+      if (!this.addPlayer({ name: nextBotName(), bot: true })) break;
+    }
   }
 
   override removeBot(): boolean {

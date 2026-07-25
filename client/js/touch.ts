@@ -8,7 +8,7 @@
 //
 // The overlay sits BELOW #hud in z-order. #hud is pointer-events:none apart
 // from its interactive children, so taps fall through to the pads while the
-// armory, the bot bar and the topbar still take their own taps.
+// armory and the topbar still take their own taps.
 
 import {
   DEAD_ZONE, STICK_R, deflection, newAimSmooth, newFireGate, releaseAim, stickKeys,

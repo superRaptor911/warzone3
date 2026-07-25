@@ -113,6 +113,27 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('#touch-opts button
 }
 applyTouchMode();
 
+// Bot roster, chosen before deploying because only the player who *creates* a
+// room sets its roster — a later joiner inherits whatever is already there
+// (same rule as the OUTBREAK checkpoint below). One generic preset resolved
+// per mode at tap time: in TDM the number is a per-team target, in OUTBREAK a
+// total squad size, which happens to make both mappings identical.
+type BotPreset = 'none' | 'few' | 'full';
+const BOT_TARGET: Record<BotPreset, number> = { none: 0, few: 3, full: 5 };
+const storedB = localStorage.getItem('wz3-bots');
+let botPreset: BotPreset = storedB === 'none' || storedB === 'few' || storedB === 'full'
+  ? storedB
+  : 'few';
+for (const b of document.querySelectorAll<HTMLButtonElement>('#bots-opts button')) {
+  b.classList.toggle('sel', b.dataset.b === botPreset);
+  b.onclick = () => {
+    botPreset = b.dataset.b as BotPreset;
+    localStorage.setItem('wz3-bots', botPreset);
+    document.querySelectorAll('#bots-opts button').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+  };
+}
+
 // tapping the score bar stands in for holding Tab
 $('topbar').addEventListener('pointerdown', (e) => {
   if (!touch.active) return;
@@ -177,7 +198,10 @@ for (const card of document.querySelectorAll<HTMLButtonElement>('.mode-card')) {
     audio.ensure();
     void goImmersive();
     const cp = card.dataset.mode === 'zombie' ? zombieCp : 0;
-    net.connect({ t: 'join', name: myName, mode: card.dataset.mode, primary: chosenPrimary, cp });
+    net.connect({
+      t: 'join', name: myName, mode: card.dataset.mode, primary: chosenPrimary, cp,
+      bots: BOT_TARGET[botPreset],
+    });
   };
 }
 
@@ -224,8 +248,6 @@ net.onWelcome = (m) => {
   grid = Grid.deserialize(m.map);
   state = new GameState(grid, myId);
   hud = new Hud(mode, {
-    onAddBot: (team) => net.send({ t: 'addBot', team }),
-    onRemoveBot: (team) => net.send({ t: 'removeBot', team }),
     onBuy: (item) => net.send({ t: 'buy', item }),
     onQuit: quitToMenu,
   });

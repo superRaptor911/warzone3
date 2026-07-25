@@ -77,17 +77,14 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 // --- TDM ---
 console.log('mode: tdm');
-const a = client<TdmSnapshot>({ t: 'join', name: 'Alice', mode: 'tdm', primary: 'rifle' });
-await sleep(400);
+// bots:5 = a per-team target, honored because this join creates the room
+const a = client<TdmSnapshot>({ t: 'join', name: 'Alice', mode: 'tdm', primary: 'rifle', bots: 5 });
+await sleep(500);
 check(a.welcome && a.welcome.mode === 'tdm', 'welcome received with map');
 check(a.welcome!.map.tiles.length === a.welcome!.map.w * a.welcome!.map.h, 'map serialized');
 
-// add 4 bots to my team, 5 to enemy
-for (let i = 0; i < 4; i++) a.ws.send(JSON.stringify({ t: 'addBot', team: 'mine' }));
-for (let i = 0; i < 5; i++) a.ws.send(JSON.stringify({ t: 'addBot', team: 'enemy' }));
-await sleep(500);
 let snap = a.snaps[a.snaps.length - 1];
-check(snap.players.length === 10, `10 players after adding bots (got ${snap.players.length})`);
+check(snap.players.length === 10, `join filled both teams to 5v5 (got ${snap.players.length})`);
 const me0 = snap.players.find(p => p.id === a.welcome!.id)!;
 const myTeam = snap.players.filter(p => p.team === me0.team);
 check(myTeam.length === 5, 'my team has 5 (4 bots + me)');
@@ -117,11 +114,20 @@ const botsMoved = snap.players.filter(p => p.bot).some(p => {
 check(botsMoved, 'bots are moving around');
 check(a.events.some(e => e.e === 'hit' || e.e === 'kill') || snap.players.every(p => p.hp === 100),
   'combat events flowing (or nobody met yet)');
-a.ws.send(JSON.stringify({ t: 'removeBot', team: 'enemy' }));
-await sleep(300);
-snap = a.snaps[a.snaps.length - 1];
-check(snap.players.length === 9, `removeBot works (got ${snap.players.length})`);
 check(snap.mode === 'tdm' && Array.isArray(snap.scores), 'tdm snapshot has scores');
+
+// a second human takes a bot's seat rather than an eleventh slot, and leaving
+// gives it back — the roster target outlives the humans who displaced it
+const b = client<TdmSnapshot>({ t: 'join', name: 'Bea', mode: 'tdm', primary: 'rifle', bots: 0 });
+await sleep(500);
+snap = a.snaps[a.snaps.length - 1];
+const humans = snap.players.filter(p => !p.bot).length;
+check(snap.players.length === 10 && humans === 2,
+  `second human evicts a bot, roster stays 10 (got ${snap.players.length}, ${humans} human)`);
+b.ws.close();
+await sleep(500);
+snap = a.snaps[a.snaps.length - 1];
+check(snap.players.length === 10, `roster refilled after the human left (got ${snap.players.length})`);
 
 // weapon switch + reload messages don't crash, primary change works
 a.ws.send(JSON.stringify({ t: 'primary', w: 'shotgun' }));
@@ -134,14 +140,12 @@ await sleep(300);
 
 // --- Zombie ---
 console.log('mode: zombie');
-const z = client<ZombieSnapshot>({ t: 'join', name: 'Bob', mode: 'zombie' });
-await sleep(400);
+// bots:3 = a total squad size in zombie mode, i.e. two squadmates
+const z = client<ZombieSnapshot>({ t: 'join', name: 'Bob', mode: 'zombie', bots: 3 });
+await sleep(500);
 check(z.welcome && z.welcome.mode === 'zombie', 'zombie welcome');
-z.ws.send(JSON.stringify({ t: 'addBot' }));
-z.ws.send(JSON.stringify({ t: 'addBot' }));
-await sleep(400);
 let zsnap = z.snaps[z.snaps.length - 1];
-check(zsnap.players.length === 3, `survivor bots added (got ${zsnap.players.length})`);
+check(zsnap.players.length === 3, `join filled the squad to 3 (got ${zsnap.players.length})`);
 check(zsnap.mode === 'zombie' && zsnap.breakT >= 0, 'zombie snapshot has wave info');
 
 // wait through break for wave 1 (10s break, poll up to 13s)

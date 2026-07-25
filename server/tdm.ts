@@ -1,7 +1,8 @@
 import { Room, type AddPlayerOpts, type Target } from './room.ts';
 import { createPlayer, refillAmmo, type Player } from './entities.ts';
-import { createBotController } from './bot.ts';
+import { createBotController, nextBotName } from './bot.ts';
 import { T_FLOOR } from '../shared/maps.ts';
+import { PRIMARIES } from '../shared/weapons.ts';
 import {
   TEAM, TILE, PLAYER_RADIUS, RESPAWN_MS, SPAWN_PROTECT_MS,
   TDM_SCORE_LIMIT, TDM_TIME_LIMIT_MS, MATCH_RESTART_MS, MAX_TEAM_SIZE,
@@ -71,6 +72,22 @@ export class TDMRoom extends Room {
     this.respawn(p);
     this.event({ e: 'join', name: p.name, team });
     return p;
+  }
+
+  // `botTarget` counts players per team here, so it reads as the match you
+  // asked for ("5v5") rather than a bot headcount. The addPlayer guard is not
+  // decoration: it returns null once a team is full, and without breaking on
+  // it a target above MAX_TEAM_SIZE would spin forever.
+  override fillBots(): void {
+    for (const team of [TEAM.RED, TEAM.BLUE]) {
+      while (this.teamCount(team) < this.botTarget) {
+        const added = this.addPlayer({
+          name: nextBotName(), bot: true, team,
+          primary: PRIMARIES[Math.floor(Math.random() * PRIMARIES.length)],
+        });
+        if (!added) break;
+      }
+    }
   }
 
   override removeBot(team?: number): boolean {

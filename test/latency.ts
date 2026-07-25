@@ -192,10 +192,9 @@ console.log('link: 400ms upstream stall');
 console.log('link: 250ms RTT, 2% loss');
 {
   const a = new Link<TdmSnapshot>(
-    { t: 'join', name: 'Lossy', mode: 'tdm', primary: 'rifle' }, { oneWayMs: 125, loss: 0.02 });
+    { t: 'join', name: 'Lossy', mode: 'tdm', primary: 'rifle', bots: 5 }, { oneWayMs: 125, loss: 0.02 });
   await sleep(900);
   check(a.welcome !== null, 'joined over a lossy link');
-  for (let i = 0; i < 4; i++) a.send({ t: 'addBot', team: 'enemy' });
 
   const mover = setInterval(() => {
     a.send({ t: 'input', seq: ++seq, dt: 0.033, keys: { d: 1 }, aim: seq * 0.05, fire: seq % 12 < 5, sprint: false });
