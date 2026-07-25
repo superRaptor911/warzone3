@@ -144,4 +144,31 @@ export interface WelcomeMsg {
   mode: GameMode;
   mapName: string;
   map: SerializedGrid;
+  /**
+   * Persistent profile token, minted on a first join. Distinct from `id`, which
+   * is the in-room player id and changes every match. Absent when the server
+   * has no database (fail-soft: the match is played, nothing is recorded).
+   */
+  pid?: string;
+  /**
+   * The name the profile owns. Authoritative: names are claimed once and never
+   * change, so the client displays this rather than what it typed.
+   */
+  name?: string;
+}
+
+/**
+ * A player profile as served by `GET /api/profile` and `welcome`. Ordinary JSON
+ * over HTTP, not part of the 15Hz snapshot path — nothing here is on the wire
+ * during a match.
+ */
+export interface ProfileDTO {
+  id: string;
+  name: string;
+  /** Deepest Outbreak wave reached, exact. Counts carried runs. */
+  bestWave: number;
+  /** Wave a solo run resumes at: a multiple of 5, and only ever earned. */
+  resumeWave: number;
+  tdmKills: number; tdmDeaths: number;
+  zKills: number; zDeaths: number;
 }

@@ -14,7 +14,7 @@ import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from '.
 import { newAssist, onTarget, releaseAssist, tickAimAssist } from './assist.ts';
 import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
-import type { GameEvent, GameMode, InputMsg, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
+import type { GameEvent, GameMode, InputMsg, PlayerSnap, ProfileDTO, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -29,7 +29,12 @@ let grid!: Grid, state!: GameState, renderer!: Renderer, hud!: Hud;
 let myId = 0, mode: GameMode = 'tdm', myName = 'Player';
 let seq = 0, lastFrame = 0, running = false, bootSeq = 0;
 let chosenPrimary = localStorage.getItem('wz3-primary') || 'rifle';
-let zombieCp = parseInt(localStorage.getItem('wz3-zombie-cp') || '0', 10) || 0;
+// Persistent profile. The token is the only thing kept locally: the wave you
+// resume at, your callsign and your lifetime stats all live server-side now, so
+// nothing here can be edited into an advantage.
+let profileId = localStorage.getItem('wz3-id') || '';
+let profile: ProfileDTO | null = null;
+let startFresh = false; // menu toggle: begin this run at wave 1, record untouched
 
 // Small/touch screens shrink the HUD and the minimap. Mirrors the media query
 // in style.css; read once at load, so the DOM HUD tracks a live resize but the
@@ -191,34 +196,140 @@ addEventListener('visibilitychange', () => {
 });
 
 for (const card of document.querySelectorAll<HTMLButtonElement>('.mode-card')) {
-  card.onclick = () => {
-    myName = nameInput.value.trim() || 'Player';
+  card.onclick = async () => {
+    myName = nameInput.value.trim();
+    // Last gate before the claim becomes permanent. A returning player owns
+    // their name already and needs no check — the server ignores the field for
+    // them — so this only ever runs on a first deploy.
+    if (!profile && myName && !await nameOk(myName)) return;
     localStorage.setItem('wz3-name', myName);
     $('conn-status').textContent = 'connecting…';
     audio.ensure();
     void goImmersive();
-    const cp = card.dataset.mode === 'zombie' ? zombieCp : 0;
     net.connect({
-      t: 'join', name: myName, mode: card.dataset.mode, primary: chosenPrimary, cp,
+      t: 'join', name: myName, mode: card.dataset.mode, primary: chosenPrimary,
       bots: BOT_TARGET[botPreset],
+      pid: profileId || undefined,
+      fresh: card.dataset.mode === 'zombie' ? startFresh : undefined,
     });
   };
 }
 
-// OUTBREAK checkpoint (saved locally; the server arms it when you start a fresh room)
-function refreshCpRow(): void {
-  const has = zombieCp >= 5;
-  $('cp-row').classList.toggle('hidden', !has);
-  if (has) $('cp-label').textContent = `OUTBREAK checkpoint — resume at wave ${zombieCp}`;
+// ---------- profile ----------
+// The server owns all of this; the client only renders it and holds the token.
+function kd(k: number, d: number): string {
+  return `${k}/${d}` + (d > 0 ? ` (${(k / d).toFixed(2)})` : '');
 }
-function saveCp(cp: number): void {
-  zombieCp = cp;
-  if (cp > 0) localStorage.setItem('wz3-zombie-cp', String(cp));
-  else localStorage.removeItem('wz3-zombie-cp');
-  refreshCpRow();
+
+function renderProfile(): void {
+  const p = profile;
+  // The callsign is claimed on the first deploy and never changes, so the field
+  // stops being an input the moment there is a profile behind it.
+  nameInput.classList.toggle('hidden', !!p);
+  $('name-lock').classList.toggle('hidden', !p);
+  if (p) $('name-lock').textContent = p.name;
+  $('prof-row').classList.toggle('hidden', !p);
+  $('code-btn').classList.toggle('hidden', !p);
+  if (p) {
+    $('pr-wave').textContent = p.bestWave > 0 ? String(p.bestWave) : '—';
+    $('pr-zkd').textContent = kd(p.zKills, p.zDeaths);
+    $('pr-tkd').textContent = kd(p.tdmKills, p.tdmDeaths);
+    ($('code-val') as HTMLElement).textContent = p.id;
+  }
+  const resume = p ? p.resumeWave : 0;
+  $('cp-row').classList.toggle('hidden', resume < 5);
+  $('cp-label').textContent = startFresh
+    ? `OUTBREAK — starting from wave 1 (checkpoint ${resume} kept)`
+    : `OUTBREAK checkpoint — resume at wave ${resume}`;
+  $('cp-clear').textContent = startFresh ? 'use checkpoint' : 'start fresh';
+  $('cp-clear').classList.toggle('sel', startFresh);
 }
-$('cp-clear').onclick = () => saveCp(0);
-refreshCpRow();
+
+async function getJson(url: string): Promise<any | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function refreshProfile(): Promise<void> {
+  profile = profileId ? await getJson(`/api/profile?id=${encodeURIComponent(profileId)}`) : null;
+  // A token the server does not know (fresh database, or a code that was wrong)
+  // is worse than none: it would silently claim a second profile on join.
+  if (profileId && !profile) { profileId = ''; localStorage.removeItem('wz3-id'); }
+  if (!profile) {
+    // First visit: pre-fill an available callsign so tap-and-play still needs no
+    // typing, while the name stays visible and editable right up to the claim.
+    if (!nameInput.value) {
+      const s = await getJson('/api/name');
+      if (s?.suggestion) nameInput.value = s.suggestion;
+    }
+  }
+  renderProfile();
+}
+
+/** Is this callsign claimable? Reports why in the menu if not. */
+async function nameOk(name: string): Promise<boolean> {
+  const note = $('name-note');
+  const r = await getJson(`/api/name?n=${encodeURIComponent(name)}`);
+  if (!r || r.free) { note.classList.add('hidden'); return true; }
+  note.textContent = r.why === 'reserved'
+    ? `“${name}” is reserved — BOT names belong to the bots`
+    : `“${name}” is taken — pick another callsign`;
+  note.classList.remove('hidden');
+  return false;
+}
+
+nameInput.onblur = () => { if (!profile && nameInput.value.trim()) void nameOk(nameInput.value.trim()); };
+nameInput.oninput = () => $('name-note').classList.add('hidden');
+
+// Non-destructive: the record keeps the checkpoint, this run just ignores it.
+$('cp-clear').onclick = () => { startFresh = !startFresh; renderProfile(); };
+
+// ---------- menu panels ----------
+function togglePanel(id: string, on: boolean): void {
+  $(id).classList.toggle('hidden', !on);
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('.mp-close')) {
+  b.onclick = () => togglePanel(b.dataset.close!, false);
+}
+$('board-btn').onclick = async () => {
+  togglePanel('board', true);
+  const body = $('board-body');
+  body.innerHTML = '<p class="help">loading…</p>';
+  const b = await getJson('/api/leaderboard');
+  if (!b) { body.innerHTML = '<p class="help">unavailable</p>'; return; }
+  const list = (rows: { name: string; kills: number }[]) => rows.length
+    ? rows.map((r, i) => `<li><span class="bi">${i + 1}</span><span class="bn">${esc(r.name)}</span><b>${r.kills}</b></li>`).join('')
+    : '<li class="bempty">no kills recorded yet</li>';
+  body.innerHTML = `
+    <div class="bcol"><h4>OUTBREAK</h4><ol>${list(b.zombie)}</ol></div>
+    <div class="bcol"><h4>SKIRMISH</h4><ol>${list(b.tdm)}</ol></div>`;
+};
+$('code-btn').onclick = () => { $('code-msg').textContent = ''; togglePanel('code', true); };
+$('code-copy').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(profileId);
+    $('code-msg').textContent = 'copied';
+  } catch { $('code-msg').textContent = 'copy failed — select it by hand'; }
+};
+$('code-load').onclick = async () => {
+  const raw = ($('code-in') as HTMLInputElement).value.trim().toLowerCase();
+  const msg = $('code-msg');
+  if (!/^[0-9a-f]{32}$/.test(raw)) { msg.textContent = 'that is not a recovery code'; return; }
+  // Verified before it is stored: the 404 is what stops a typo becoming a
+  // brand-new blank profile on the next join.
+  const p: ProfileDTO | null = await getJson(`/api/profile?id=${raw}`);
+  if (!p) { msg.textContent = 'no profile with that code'; return; }
+  profileId = p.id;
+  localStorage.setItem('wz3-id', profileId);
+  profile = p;
+  renderProfile();
+  msg.textContent = `restored — ${p.name}`;
+};
+
+void refreshProfile();
 
 net.onClose = (reason) => {
   running = false;
@@ -228,13 +339,13 @@ net.onClose = (reason) => {
   // '' is a deliberate quit and has nothing to report; undefined would be a
   // caller that forgot to say why.
   $('conn-status').textContent = reason ?? 'disconnected';
-  refreshCpRow();
+  void refreshProfile(); // the match just wrote to it
 };
 
 // Leave the match. The socket close is the whole of it: the server frees the
 // slot and announces the departure, and onClose above puts the menu back and
-// releases the wake lock. OUTBREAK progress needs no saving here — the
-// checkpoint is written from snapshots as the waves are cleared.
+// releases the wake lock. Nothing is saved from here — the server banks this
+// match's kills on the same close, and the waves as they were cleared.
 function quitToMenu(): void {
   hud.togglePause(false);
   hud.toggleBuy(false);
@@ -245,6 +356,10 @@ net.onWelcome = (m) => {
   running = false;
   myId = m.id;
   mode = m.mode;
+  // First join mints the profile; from here the token is the identity and the
+  // name it carries is the authoritative one (ours may have been a suggestion).
+  if (m.pid && m.pid !== profileId) { profileId = m.pid; localStorage.setItem('wz3-id', profileId); }
+  if (m.name) myName = m.name;
   grid = Grid.deserialize(m.map);
   state = new GameState(grid, myId);
   hud = new Hud(mode, {
@@ -272,7 +387,6 @@ net.onWelcome = (m) => {
 
 net.onSnap = (s, when) => {
   state.addSnapshot(s, when);
-  if (s.mode === 'zombie' && s.cp > zombieCp) saveCp(s.cp);
   for (const e of s.events) handleEvent(e, s);
 };
 

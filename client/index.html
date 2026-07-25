@@ -18,13 +18,28 @@
     <div class="mc-brand">
       <h1><span class="t1">WARZONE</span><span class="t2">·3</span></h1>
       <p class="tagline">top-down tactical shooter</p>
+      <!-- A callsign is claimed once and owned for good, so the field is only
+           editable until the first deploy; after that it shows what the profile
+           owns (#name-lock) and the server ignores whatever the wire says. -->
       <label class="field">
         <span class="fl">callsign</span>
-        <input id="name-input" maxlength="16" placeholder="unnamed" autocomplete="off">
+        <input id="name-input" maxlength="16" placeholder="unnamed" autocomplete="off"
+               autocapitalize="off" spellcheck="false">
+        <span id="name-lock" class="hidden"></span>
       </label>
+      <p id="name-note" class="hidden"></p>
+      <div id="prof-row" class="hidden">
+        <span class="pr-stat">BEST WAVE <b id="pr-wave">—</b></span>
+        <span class="pr-stat">OUTBREAK <b id="pr-zkd">—</b></span>
+        <span class="pr-stat">SKIRMISH <b id="pr-tkd">—</b></span>
+      </div>
       <div id="cp-row" class="hidden">
         <span id="cp-label"></span>
         <button id="cp-clear">start fresh</button>
+      </div>
+      <div id="prof-links">
+        <button id="board-btn">LEADERBOARD</button>
+        <button id="code-btn" class="hidden">RECOVERY CODE</button>
       </div>
     </div>
 
@@ -87,6 +102,33 @@
       <p class="help" id="help-kb">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Esc pause &middot; Tab scores</p>
       <p class="help hidden" id="help-touch">left pad moves &middot; right thumb aims, and the gun fires itself on target &middot; buttons reload, swap and sprint &middot; tap the score bar for the scoreboard</p>
       <p id="conn-status"></p>
+    </div>
+  </div>
+
+  <div id="board" class="menu-panel cut hidden">
+    <h3><span>LEADERBOARD</span><button class="mp-close" data-close="board" aria-label="close">&times;</button></h3>
+    <div id="board-body"></div>
+    <p class="help">lifetime kills &middot; bots count</p>
+  </div>
+
+  <!-- The code IS the credential: it is the profile token verbatim, so anyone
+       holding it owns the progress and the callsign. -->
+  <div id="code" class="menu-panel cut hidden">
+    <h3><span>RECOVERY CODE</span><button class="mp-close" data-close="code" aria-label="close">&times;</button></h3>
+    <div id="code-body">
+      <p class="help">this code is your account. paste it on another device to carry
+        your callsign and progress across. anyone who has it owns them.</p>
+      <div class="code-mine">
+        <code id="code-val"></code>
+        <button id="code-copy">COPY</button>
+      </div>
+      <label class="field">
+        <span class="fl">restore from a code</span>
+        <input id="code-in" maxlength="32" placeholder="32 characters" autocomplete="off"
+               autocapitalize="off" spellcheck="false">
+      </label>
+      <button id="code-load">RESTORE</button>
+      <p id="code-msg"></p>
     </div>
   </div>
 </div>

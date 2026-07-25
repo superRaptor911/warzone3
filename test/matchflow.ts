@@ -1,4 +1,11 @@
 // Direct room-level tests for match lifecycle transitions not covered by smoke.ts.
+//
+// Persistence is pointed at an in-memory database before anything can open one:
+// `server/db.ts` opens lazily on first use, so this assignment (module body,
+// ahead of every test block) is what guarantees a test run cannot touch a real
+// player's record — including when this file is run directly.
+process.env.WZ3_DB = ':memory:';
+
 import { TDMRoom } from '../server/tdm.ts';
 import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
 import {
@@ -7,6 +14,10 @@ import {
 } from '../shared/constants.ts';
 import { Grid, T_FLOOR } from '../shared/maps.ts';
 import { createPickup } from '../server/entities.ts';
+import {
+  addStats, claimProfile, closeDb, leaderboard, nameError, nameKey, nameTaken,
+  profileById, recordWave, suggestName,
+} from '../server/db.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
@@ -294,11 +305,11 @@ console.log('zombie checkpoints');
 {
   const room = new ZombieRoom('z3');
   const h = room.addPlayer({ name: 'H', bot: false })!;
-  room.applyCheckpoint('junk');
-  room.applyCheckpoint(-25);
-  room.applyCheckpoint(3);
-  check(room.checkpoint === 0 && room.wave === 0, 'garbage/low checkpoints rejected');
-  room.applyCheckpoint(12);
+  room.arm(NaN);
+  room.arm(-25);
+  room.arm(3);
+  check(room.checkpoint === 0 && room.wave === 0, 'garbage/low resume points rejected');
+  room.arm(12);
   check(room.checkpoint === 10 && room.wave === 9, 'join checkpoint floors to a multiple of 5 and arms the wave');
   check(h.points === checkpointPoints(10), 'checkpoint start cash scales with the wave');
   room.modeUpdate(999); // burn the break
@@ -315,7 +326,7 @@ console.log('zombie checkpoints');
   check(room.state === 'break' && room.wave === 14, 'wipe restarts from the checkpoint, not wave 0');
   check(h.points === checkpointPoints(15) && h.slots.length === 1, 'restart grants checkpoint cash + pistol');
   check(room.modeSnapshot().cp === 15, 'snapshot carries the checkpoint');
-  room.applyCheckpoint(50);
+  room.arm(50);
   check(room.checkpoint === 15, 'checkpoint cannot be re-armed mid-run');
   room.destroy();
 
@@ -323,7 +334,7 @@ console.log('zombie checkpoints');
   const r2 = new ZombieRoom('z4');
   r2.addPlayer({ name: 'A', bot: false });
   r2.addPlayer({ name: 'B', bot: false });
-  r2.applyCheckpoint(50);
+  r2.arm(50);
   check(r2.checkpoint === 0, 'second human cannot arm a checkpoint on a fresh room');
   r2.destroy();
 }
@@ -905,6 +916,119 @@ console.log('\ntouch camera lead');
   for (let i = 0; i < 15; i++) tickLead(up, 0, -REACH, TAU, 1 / 60);
   check(up.x === 0 && up.y < -REACH * 0.95, `the lead eases out as well as in (y ${up.y.toFixed(1)})`);
 }
+
+// ---- persistent profiles ----
+// The name registry, the delta flush and the earned/carried split. All three are
+// things a wrong answer would be invisible in play: a stat that quietly does not
+// save, or a carried run that silently hands out 39 skipped waves.
+console.log('profiles: name registry');
+{
+  check(nameKey('  Raptor  ') === 'raptor' && nameKey('R  aptor') === 'r aptor',
+    'the key folds case and collapses internal whitespace');
+  check(nameError('') === 'empty' && nameError('   ') === 'empty', 'a blank name cannot be claimed');
+  check(nameError('BOT Viper') === 'reserved' && nameError('bot viper') === 'reserved',
+    'the BOT prefix is reserved, case-folded');
+  check(nameError('Botanist') === null, 'but "bot" as a word start is fine — only the prefix is reserved');
+
+  const a = claimProfile('Raptor')!;
+  check(!!a && a.name === 'Raptor' && /^[0-9a-f]{32}$/.test(a.id), 'a claim mints a 32-hex token');
+  check(a.bestWave === 0 && a.resumeWave === 0 && a.zKills === 0, 'a fresh profile is empty');
+  check(claimProfile('raptor') === null, 'the same name in different casing is refused');
+  check(!!claimProfile('Raptor Prime'), 'a name that merely contains another is fine');
+  check(claimProfile('raptor   prime') === null,
+    'but padded spacing cannot shadow it — runs collapse to one');
+  check(nameTaken('RAPTOR') && !nameTaken('Nomad'), 'nameTaken folds the same way');
+  check(claimProfile('BOT Ghost') === null, 'a reserved name is never claimed');
+  check(!nameTaken(suggestName()), 'the menu suggestion is free');
+  check(profileById(a.id)!.name === 'Raptor' && profileById('nope') === null, 'lookup by token');
+}
+
+console.log('profiles: stat flush');
+{
+  const p1 = claimProfile('Flusher')!;
+  const room = new TDMRoom('p1');
+  const h = room.addPlayer({ name: p1.name, bot: false })!;
+  h.profileId = p1.id;
+
+  room.flushStats(h);
+  check(profileById(p1.id)!.tdmKills === 0, 'nothing to bank writes nothing');
+  h.kills = 4; h.deaths = 2;
+  room.flushStats(h);
+  check(profileById(p1.id)!.tdmKills === 4 && profileById(p1.id)!.tdmDeaths === 2, 'a flush banks the match');
+  room.flushStats(h);
+  room.flushStats(h);
+  check(profileById(p1.id)!.tdmKills === 4, 'flushing again is a no-op — it writes a delta, not a total');
+  h.kills = 7;
+  room.flushStats(h);
+  check(profileById(p1.id)!.tdmKills === 7, 'later kills bank as a delta');
+
+  // The match reset zeroes kills/deaths, so the banked marks have to go with
+  // them or the next match's first 7 kills vanish.
+  room.resetMatch();
+  check(h.kills === 0 && h.bankedKills === 0, 'a reset clears the counters and the banked marks together');
+  h.kills = 3;
+  room.flushStats(h);
+  check(profileById(p1.id)!.tdmKills === 10, 'the match after a reset banks in full');
+
+  // Bots share every code path and must never write.
+  const bot = room.addPlayer({ name: 'BOT Viper', bot: true })!;
+  bot.kills = 99;
+  room.flushStats(bot);
+  check(bot.profileId === null, 'bots have no profile, so the flush is a no-op for them');
+  room.destroy();
+}
+
+console.log('profiles: outbreak waves, earned vs carried');
+{
+  const earner = claimProfile('Earner')!;
+  const carried = claimProfile('Carried')!;
+
+  recordWave(earner.id, 12, true);
+  let e = profileById(earner.id)!;
+  check(e.bestWave === 12, 'best wave is exact');
+  check(e.resumeWave === 10, 'the resume point floors to a multiple of 5');
+  recordWave(earner.id, 7, true);
+  e = profileById(earner.id)!;
+  check(e.bestWave === 12 && e.resumeWave === 10, 'a worse run never lowers either number');
+
+  recordWave(carried.id, 40, false);
+  const c = profileById(carried.id)!;
+  check(c.bestWave === 40, 'a carried run still counts toward best wave');
+  check(c.resumeWave === 0, 'but not toward the resume point — no free 39 waves of cash');
+
+  // The room arms from the stored resume point, and `earning` is decided against
+  // it: this is the whole carry gate, expressed the way index.ts does it.
+  const room = new ZombieRoom('p2');
+  const h = room.addPlayer({ name: 'H', bot: false })!;
+  h.profileId = earner.id;
+  room.arm(profileById(earner.id)!.resumeWave);
+  check(room.checkpoint === 10 && room.wave === 9, 'a room arms at the stored resume point');
+  h.earning = room.checkpoint <= profileById(earner.id)!.resumeWave;
+  check(h.earning, 'the player who armed it is earning');
+  const guest = room.addPlayer({ name: 'G', bot: false })!;
+  guest.profileId = carried.id;
+  guest.earning = room.checkpoint <= profileById(carried.id)!.resumeWave;
+  check(!guest.earning, 'a joiner whose own resume point is lower is being carried');
+
+  room.startWave(15);
+  check(profileById(earner.id)!.resumeWave === 15, 'surviving to 15 advances the earner');
+  check(profileById(carried.id)!.resumeWave === 0, 'and never the carried player');
+  check(profileById(carried.id)!.bestWave === 40, 'whose best wave stays where it was');
+  room.destroy();
+}
+
+console.log('profiles: leaderboard');
+{
+  const top = claimProfile('Topper')!;
+  const quiet = claimProfile('Quiet')!;
+  addStats(top.id, 'zombie', 500, 3);
+  const board = leaderboard(10);
+  check(board.zombie[0].name === 'Topper' && board.zombie[0].kills === 500, 'ranked by kills, descending');
+  check(!board.zombie.some(r => r.name === 'Quiet'), 'a profile with no kills is not an entry');
+  check(!!profileById(quiet.id), 'even though it exists');
+  check(!board.tdm.some(r => r.name === 'Topper'), 'the two modes are separate boards');
+}
+closeDb();
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);
 process.exit(failures === 0 ? 0 : 1);

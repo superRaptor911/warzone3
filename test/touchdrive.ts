@@ -173,7 +173,11 @@ if (!chrome) {
 
 const PORT = 3214;
 const server = spawn('node', [path.join(import.meta.dirname, '..', 'server', 'index.ts')], {
-  env: { ...process.env, PORT: String(PORT) },
+  // In-memory profiles, and not merely to avoid littering: callsigns are claimed
+  // permanently, so against a real database the second run of this suite would
+  // find 'TOUCH' already owned, the menu would refuse to deploy, and every check
+  // after the first navigation would hang waiting for a match that never starts.
+  env: { ...process.env, PORT: String(PORT), WZ3_DB: ':memory:' },
   stdio: 'ignore',
 });
 await sleep(1500);
@@ -192,8 +196,18 @@ function done(): never {
 
 // ---- phone: 844x390 landscape, touch controls forced on ----
 console.log('touch client (844x390)');
+// Runs on EVERY navigation, so the profile token has to survive it: callsigns
+// are claimed permanently, and a reload that arrives as a brand-new device
+// holding a name it already owns is refused in the menu — which would hang every
+// check after the rejoin pass renavigates.
 await page.send('Page.addScriptToEvaluateOnNewDocument', {
-  source: `try{localStorage.clear();localStorage.setItem('wz3-touch','on');localStorage.setItem('wz3-name','TOUCH');}catch(e){}`,
+  source: `try{
+    const id = localStorage.getItem('wz3-id');
+    localStorage.clear();
+    if (id) localStorage.setItem('wz3-id', id);
+    localStorage.setItem('wz3-touch','on');
+    localStorage.setItem('wz3-name','TOUCH');
+  }catch(e){}`,
 });
 await page.viewport(844, 390, true);
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
@@ -461,8 +475,17 @@ await page.release();
 
 // ---- desktop regression: the zoom/autoDensity work must not touch it ----
 console.log('\ndesktop client (1920x1080)');
+// Registered after the touch one and therefore runs after it: dropping the token
+// here is what makes this pass its own player, claiming its own callsign.
 await page.send('Page.addScriptToEvaluateOnNewDocument', {
-  source: `try{localStorage.clear();localStorage.setItem('wz3-name','DESKTOP');}catch(e){}`,
+  // Dropping wz3-touch matters as much as the token: the script above forces it
+  // on for every document, and this pass exists to prove the fine-pointer path.
+  // Removed rather than set 'off', so the default ('auto') is what gets tested.
+  source: `try{
+    localStorage.removeItem('wz3-id');
+    localStorage.removeItem('wz3-touch');
+    localStorage.setItem('wz3-name','DESKTOP');
+  }catch(e){}`,
 });
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
 await page.viewport(1920, 1080, false);

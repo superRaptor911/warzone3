@@ -6,6 +6,7 @@ import {
   TICK_RATE, SNAPSHOT_EVERY, PLAYER_HP, SWITCH_MS, STAMINA_MAX,
 } from '../shared/constants.ts';
 import { weaponOf, ammoOf, type Player, type Zombie } from './entities.ts';
+import { addStats } from './db.ts';
 import { botThink } from './bot.ts';
 import type {
   GameEvent, GameMode, InputMsg, PlayerSnap, RoomState, SnapshotBase, Vec2, ZombieSnap,
@@ -96,6 +97,40 @@ export class Room {
   destroy(): void { clearInterval(this.interval); }
 
   humanCount(): number { return this.clients.size; }
+
+  /**
+   * Bank this player's kills/deaths into their persistent profile.
+   *
+   * Called at the two moments the in-memory counters stop being readable: match
+   * end (the reset zeroes them) and departure (`leaveRoom` deletes the player).
+   * What makes both calls safe is that it writes a **delta** — `banked*` records
+   * what is already in the database, so flushing twice adds nothing.
+   *
+   * A no-op without a `profileId`, which is what keeps bots free and keeps
+   * directly-constructed rooms (test/matchflow.ts) from opening a database.
+   */
+  flushStats(p: Player): void {
+    if (!p.profileId) return;
+    const k = p.kills - p.bankedKills;
+    const d = p.deaths - p.bankedDeaths;
+    if (k <= 0 && d <= 0) return;
+    addStats(p.profileId, this.mode, k, d);
+    p.bankedKills = p.kills;
+    p.bankedDeaths = p.deaths;
+  }
+
+  /**
+   * Flush everyone, then forget what was banked — for the match resets, which
+   * zero `kills`/`deaths` immediately afterwards and would otherwise leave the
+   * banked marks pointing above the counters, swallowing the next match.
+   */
+  flushAndClearStats(): void {
+    for (const p of this.players.values()) {
+      this.flushStats(p);
+      p.bankedKills = 0;
+      p.bankedDeaths = 0;
+    }
+  }
 
   event(e: GameEvent): void { this.events.push(e); }
 

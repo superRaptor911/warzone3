@@ -33,6 +33,23 @@ export interface Player {
   kills: number; deaths: number; points: number; damageDealt: number;
   joinedAt: number;
   botCtl: BotController | null; // bot controller state, set for bots
+  // ---- persistence (server-only; never snapshotted) ----
+  /**
+   * Persistent profile this human is playing as, or null. Null for every bot,
+   * and for a human the database could not serve — `Room.flushStats` keys off
+   * this, so both cases cost nothing and no test that builds rooms directly
+   * ever touches a database.
+   */
+  profileId: string | null;
+  /**
+   * May the waves this player survives raise their own resume point? Fixed once
+   * at join, from whether the room was armed at or below where they could have
+   * started it themselves. False means a carried run: `best_wave` still climbs,
+   * the resume point does not.
+   */
+  earning: boolean;
+  /** Kills/deaths already written to the profile, so a flush writes a delta. */
+  bankedKills: number; bankedDeaths: number;
 }
 
 export function createPlayer(
@@ -53,6 +70,7 @@ export function createPlayer(
     kills: 0, deaths: 0, points: 0, damageDealt: 0,
     joinedAt: Date.now(),
     botCtl: null,
+    profileId: null, earning: false, bankedKills: 0, bankedDeaths: 0,
   };
 }
 

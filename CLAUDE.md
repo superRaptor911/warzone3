@@ -62,7 +62,7 @@ Client-side, `client/js/state.ts` (`simStep`) mirrors server `applyInput` moveme
 `room.ts` holds the base `Room`: 30Hz tick, per-player input queue with a dt budget (anti-speedhack), hitscan resolution, damage/kill bookkeeping, and 15Hz personalized snapshots (`base` object mutated per client with `ack` + `self`). Mode rooms subclass it and override hooks: `addPlayer`, `removeBot`, `fillBots`, `hitscanTargets`, `damageTarget`, `onPlayerDeath`, `modeUpdate`, `respawn`, `inputAllowed`, `modeSnapshot`, and the bot hooks (`botEnemies`, `botGoal`, `botGoalReached`, `botThreat`). The base class defines them as no-op stubs (or optional methods) so `botThink` and matchmaking can call them mode-agnostically.
 
 - `tdm.ts` — teams, score/time limits, spawn selection, match restart, bot eviction when a human joins a full team.
-- **The bot roster is a property of the room, chosen at creation and never edited in-game.** A `join` carries `bots`, but `index.ts` honors it only when that join *created* the room (the rule `applyCheckpoint` already used) — a later joiner inherits the match instead of reshaping someone else's. `Room.botTarget` holds it and `fillBots()` applies it: per team in TDM, total squad size in zombie, both capped by the mode's own maximum and both breaking on `addPlayer` returning null so an over-large target can't spin. `fillBots` runs again from `leaveRoom` whenever a human departs, because a human joining a full team *evicts* a bot to get in — without the refill the roster only ever decays. There is deliberately no `addBot`/`removeBot` message: hiding the buttons but leaving the path live would be the same feature with worse discoverability.
+- **The bot roster is a property of the room, chosen at creation and never edited in-game.** A `join` carries `bots`, but `index.ts` honors it only when that join *created* the room (the same rule that arms an Outbreak checkpoint, see Persistent profiles) — a later joiner inherits the match instead of reshaping someone else's. `Room.botTarget` holds it and `fillBots()` applies it: per team in TDM, total squad size in zombie, both capped by the mode's own maximum and both breaking on `addPlayer` returning null so an over-large target can't spin. `fillBots` runs again from `leaveRoom` whenever a human departs, because a human joining a full team *evicts* a bot to get in — without the refill the roster only ever decays. There is deliberately no `addBot`/`removeBot` message: hiding the buttons but leaving the path live would be the same feature with worse discoverability.
 - **Supply crates are Outbreak-only floor loot** (`Pickup` in `entities.ts`, placed and collected in `zombie.ts`). They carry the shop's own two effects at full strength — `refillAmmo` and a full heal — so scarcity is the entire balance: `PICKUPS_PER_WAVE` (2) placed at each `startWave` on random floor tiles at least `PICKUP_SPAWN_CLEAR` (400px) from every survivor spawn, accumulating to `MAX_PICKUPS` (4) because uncollected ones persist, and cleared by `resetGame`. The spot pool is precomputed in the constructor, like TDM's `openLeft/openRight`. **Humans only**: bots walk over them, since a squadmate spending a rare full refill it did not need is the one way the feature makes the game worse, and bots already buy at every wave break. A player who cannot use one leaves it standing (full health, full ammo) — the same silence-means-refusal shape as `buy`, which is why the `pick` event *is* the confirmation. Collection runs in every room state, so looting during the break is the reward for leaving the compound. Code says `pickup`, never `crate`: `shared/maps.ts` already has `T_CRATE` tiles, which are cover.
 - `zombie.ts` — wave composition/scaling, zombie AI (direct steer on LOS else A*), shop, revive-on-wave-clear, squad-wipe reset, and **frenzy**: remaining ≤3 zombies or waveAge >75s ramps `z.effSpeed` above player walk speed (anti-kiting, paired with sprint stamina).
 - `bot.ts` — bots are not special-cased in the sim: `botThink` emits the same input objects a client would send (`BotInput`), processed through the same pipeline. Skill knobs are `errBase`/`reaction` in `createBotController`.
@@ -101,6 +101,80 @@ Twin-stick: a fixed 8-way dpad on the left half, a floating aim stick on the rig
 - **Pickups get their own `worldFx` layer, not the `emissive` one** (`scene.ts`). Being above the lightmap is what makes them read at the ambient floor, and that is all they needed; putting them *inside* `emissive` would have blinked them on and off, because `fxsync` toggles `emissive.visible` by tracer/flash count, and it would keep the bloom filter running every frame of every Outbreak match for four sprites. Their minimap blips are **squares** while every entity blip is a disc — in Outbreak each survivor is already a green dot and `TEAM_COLORS[SURVIVOR].name` is the same green a medkit wants, so colour alone could not say "object, not person".
 - `gfx/decals.ts` — persistent blood stamped into a half-res map-sized RenderTexture (one tiny render pass per stamp, zero per-frame cost); wiped on `matchstart` (TDM restart / zombie squad-wipe — both modes emit it).
 - Bloom (`AdvancedBloomFilter`) applies to the `emissive` container only, toggled invisible on idle frames.
+
+### Persistent profiles (`server/db.ts`)
+
+Kills, deaths and Outbreak wave depth survive the room, in sqlite. `node:sqlite`
+is builtin, so this still costs **zero npm dependencies** (`ws` remains the only
+one), and pm2 is pinned to `instances: 1, exec_mode: fork` — a single-writer
+synchronous database is exactly what that shape wants. **`server/db.ts` is the
+only file that may import `node:sqlite`**: never `shared/` (it is served to the
+browser with types stripped, so a `node:` import breaks the page rather than
+failing a build) and never `client/`.
+
+- **The point of the database is that the client stopped being trusted.** The
+  Outbreak checkpoint used to be `wz3-zombie-cp` in localStorage, declared on
+  join — anyone could resume at wave 995. `ZombieRoom.arm(resume)` now takes the
+  number from the profile, honored only when that join *created* the room (the
+  same rule `index.ts` applies to the bot roster, and the internal
+  `humans === 1 && wave === 0 && state === 'break'` guard stays as a second
+  fence). Existing local checkpoints were dropped, not migrated: honoring one
+  once would have been a free ride to wave 995 for anyone who knew the key.
+- **Everything here is fail-soft.** An unopenable or corrupt file logs one line
+  and disables persistence — reads null, writes no-op, `/api/leaderboard` empty,
+  `welcome` carries no token, `nameTaken` reports nothing taken so nobody is
+  locked out. A stats file must never take a multiplayer server offline, and
+  `max_restarts: 10` means a hard failure would take it offline *permanently*.
+- **Identity is a server-minted 32-hex token** (`wz3-id`), shown in the menu as a
+  recovery code — the code *is* the credential. It is minted on a first join and
+  returned as `welcome.pid`, deliberately **not** `welcome.id` (that is the
+  in-room player id and changes every match). There is no mint endpoint: a row is
+  INSERTed only when a socket takes a room seat, so garbage rows cost a real
+  match instead of a curl loop.
+- **Callsigns are claimed once and owned forever.** `profiles.name_key` (case
+  folded, internal whitespace runs collapsed) carries the UNIQUE index, and that
+  index is the arbiter — two sockets can claim one name in the same millisecond.
+  Note the fold's limit: it folds *padding*, so `Raptor  Prime` cannot shadow
+  `Raptor Prime`, but `R aptor` is still its own name. Names starting `bot ` are
+  reserved, because bots are `'BOT ' + name` and appear in the kill feed by name
+  alone. `resolveProfile` runs **before** matchmaking so a refused name never
+  consumes a room seat, and a resolved token ignores `m.name` entirely — **the
+  wire can no longer set a display name.**
+- **`best_wave` and `resume_wave` are two columns for one reason.** `best_wave`
+  counts every wave you were present for, carried runs included; `resume_wave`
+  advances only when `p.earning` (the room was armed at or below your own resume
+  point). Without the split, one stranger's deep room hands a fresh player
+  `checkpointPoints(40)` = 23,400 starting cash, permanently. `earning` is fixed
+  at join, **after** arming, and resume stays quantised to `CHECKPOINT_EVERY` so
+  the arming maths is untouched.
+- **Stat writes are deltas, at two moments only**: match end (`resetMatch` /
+  `resetGame`, whose resets zero the counters — hence `flushAndClearStats`, which
+  clears the banked marks with them) and `leaveRoom`, before the player is
+  deleted, because quitting mid-match is how people leave. `Room.flushStats` is a
+  **no-op without a `profileId`**, which is what makes bots free and keeps
+  directly-constructed rooms in `test/matchflow.ts` from ever opening a database.
+  Waves write at each `startWave`, so a pm2 restart cannot cost an hour of a run.
+- **The API is read-only** (`GET /api/profile`, `/api/name`, `/api/leaderboard`)
+  and must be matched **before** the static branch, which rewrites any unknown
+  path to `/client/<path>`. The 404 on an unknown token is load-bearing: it is
+  what lets the menu tell a mistyped recovery code from a real one *before*
+  reconnecting and claiming a second blank profile.
+- The menu name field is editable only until a profile exists, then it is
+  replaced by `#name-lock`. A first visit pre-fills an available `Player####`, so
+  tap-and-play still needs no typing while the name stays visible and editable
+  right up to the claim — the claim is permanent and there is no rename.
+  `#cp-clear` is now a **non-destructive** per-run "start from wave 1" toggle
+  (`fresh` on the join), not a delete.
+- **The leaderboard ranks lifetime kills, bots included**, two boards, zero-kill
+  rows excluded. Known and accepted: a TDM room left running against bots ranks,
+  and `best_wave` is inflatable by matchmaking into a deep room. `resume_wave`
+  and the run economy are the things protected from both.
+- **Tests must never touch a real record.** `WZ3_DB` overrides the path;
+  `matchflow.ts` sets `:memory:` in its module body (db.ts opens lazily, so that
+  runs in time), and `smoke.ts`/`touchdrive.ts` pass it in the server's spawn
+  env. For `touchdrive.ts` this is not hygiene but correctness: callsigns are
+  permanent, so on a second run against a real database `TOUCH` would already be
+  owned, the menu would refuse to deploy, and every later check would hang.
 
 ### Panels, pause and leaving a match
 

@@ -99,11 +99,67 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
 #name-input::placeholder { color: #4a4f48; letter-spacing: 2px; }
 #name-input:focus { border-color: #454c54; border-left-color: var(--blood-lit); background: #0e1113; }
 
+/* A claimed callsign stops being an input and becomes the label of who you are:
+   same box, same type, no caret. */
+#name-lock { display: block; width: 100%; padding: 11px 14px; font-size: 16px; letter-spacing: 3px;
+  font-family: var(--ff-head); text-transform: uppercase; background: #0b0d0f; color: #e6e8e2;
+  border: 1px solid #23272c; border-left: 2px solid #4a6b3a; }
+#name-note { font-size: 11px; letter-spacing: 1px; color: #c08f3a; margin: -8px 0 12px; }
+
+#prof-row { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 12px; }
+.pr-stat { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-faint); }
+.pr-stat b { font-family: var(--ff-num); font-size: 12px; letter-spacing: 1px; color: var(--ink); }
+
 #cp-row { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
 #cp-label { font-size: 11px; letter-spacing: 1px; color: #9fb87a; }
-#cp-clear { padding: 4px 9px; background: #0b0d0f; color: var(--ink-dim); font-size: 10px; letter-spacing: 1px;
-  font-family: var(--ff); text-transform: uppercase; border: 1px solid #2b3036; cursor: pointer; }
-#cp-clear:hover { color: #fff; border-color: var(--blood-lit); }
+#cp-clear, #prof-links button { padding: 4px 9px; background: #0b0d0f; color: var(--ink-dim); font-size: 10px;
+  letter-spacing: 1px; font-family: var(--ff); text-transform: uppercase; border: 1px solid #2b3036; cursor: pointer; }
+#cp-clear:hover, #prof-links button:hover { color: #fff; border-color: var(--blood-lit); }
+#cp-clear.sel { color: #fff; border-color: var(--blood-lit); background: #241416; }
+#prof-links { display: flex; gap: 6px; margin: 0 0 16px; }
+
+/* Menu panels (leaderboard, recovery code): the menu's own overlays, sharing the
+   card's tokens and cut edge. Above .menu-card (z-index 1), never full-screen. */
+.menu-panel { --c: 12px; position: absolute; z-index: 3; left: 50%; top: 50%;
+  transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px));
+  max-height: min(80vh, 560px); overflow: auto; padding: 18px 20px;
+  box-shadow: 0 20px 70px rgba(0,0,0,.8); }
+.menu-panel::before { background: linear-gradient(170deg, #1b1e22 0%, #121517 100%); }
+.menu-panel h3 { display: flex; align-items: center; gap: 10px; font-family: var(--ff-head); font-size: 14px;
+  letter-spacing: 4px; text-transform: uppercase; color: #e3e5df; margin-bottom: 12px; }
+.menu-panel h3 span { flex: 1; }
+.mp-close { width: 26px; height: 26px; background: transparent; border: 1px solid #2b3036; color: var(--ink-dim);
+  font-size: 15px; line-height: 1; cursor: pointer; }
+.mp-close:hover { color: #fff; border-color: var(--blood-lit); }
+
+#board-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 10px; }
+.bcol h4 { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--ink-faint);
+  margin-bottom: 6px; border-bottom: 1px solid #23272c; padding-bottom: 4px; }
+.bcol ol { list-style: none; }
+.bcol li { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; color: var(--ink-dim); }
+.bcol li .bi { font-family: var(--ff-num); font-size: 10px; color: var(--ink-faint); width: 16px; }
+.bcol li .bn { flex: 1; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bcol li b { font-family: var(--ff-num); color: #c9b273; }
+.bcol li.bempty { color: var(--ink-faint); font-size: 11px; }
+
+.code-mine { display: flex; align-items: center; gap: 8px; margin: 12px 0 16px; }
+#code-val { flex: 1; font-family: var(--ff-num); font-size: 11px; letter-spacing: 1px; color: #9fb87a;
+  background: #0b0d0f; border: 1px solid #23272c; padding: 9px 10px; word-break: break-all;
+  user-select: all; -webkit-user-select: all; }
+#code-copy, #code-load { padding: 9px 12px; background: #0e1113; color: var(--ink); border: 1px solid #2b3036;
+  font-family: var(--ff); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; cursor: pointer; }
+#code-copy:hover, #code-load:hover { color: #fff; border-color: var(--blood-lit); }
+#code-in { width: 100%; padding: 9px 10px; font-family: var(--ff-num); font-size: 12px; background: #0b0d0f;
+  color: #e6e8e2; border: 1px solid #2b3036; border-left: 2px solid var(--blood); outline: none; }
+#code-msg { margin-top: 10px; font-size: 11px; letter-spacing: 1px; color: #c08f3a; min-height: 14px; }
+
+/* Tap targets, on the same reasoning as the in-game panels: a close button you
+   cannot hit is worse than no panel. Not scaled by --s — 44px is a floor. */
+@media (pointer: coarse) {
+  .mp-close { width: 40px; height: 40px; font-size: 20px; }
+  #code-copy, #code-load { min-height: 44px; }
+  #code-in { min-height: 44px; }
+}
 
 /* mode cards: same grimy world, two factions of it. OUTBREAK decays, SKIRMISH
    is cold steel — the card previews the mode's feel rather than only naming it. */
@@ -154,6 +210,11 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
   .mc-brand h1 { font-size: clamp(38px, 13vw, 58px); letter-spacing: 7px; }
   .tagline { margin-bottom: 26px; }
   #name-input { padding: 14px; font-size: 17px; }
+  #name-lock { padding: 14px; font-size: 17px; }
+  /* 44px is the tap-target floor, not decoration: these are the only menu
+     controls small enough to miss on a phone. */
+  #cp-clear, #prof-links button { min-height: 40px; padding: 8px 14px; font-size: 11px; }
+  #board-body { grid-template-columns: 1fr; }
   .mode-row { grid-template-columns: 1fr; gap: 10px; }
   .mode-card { padding: 18px 20px; min-height: 96px; }
   .mc-main { margin-top: 4px; }
@@ -178,7 +239,11 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
   .mc-foot { grid-area: foot; margin-top: 10px; padding-top: 8px; }
   .mc-brand h1 { font-size: 32px; letter-spacing: 5px; }
   .tagline { font-size: 9px; margin: 4px 0 12px; letter-spacing: 3px; }
-  #name-input { padding: 8px 11px; font-size: 14px; }
+  #name-input, #name-lock { padding: 8px 11px; font-size: 14px; }
+  #prof-row { gap: 2px 12px; margin-bottom: 8px; }
+  #prof-links { margin-bottom: 10px; }
+  .menu-panel { padding: 14px 16px; max-height: calc(100vh - 24px); }
+  #board-body { gap: 12px; }
   .mode-row { margin-bottom: 10px; gap: 10px; }
   .mode-card { padding: 10px 12px; }
   .mode-card .mode-title { font-size: 16px; margin: 1px 0 4px; }

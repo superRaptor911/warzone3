@@ -4,6 +4,7 @@ import {
   type Player, type Pickup, type Zombie,
 } from './entities.ts';
 import { createBotController, nextBotName } from './bot.ts';
+import { recordWave } from './db.ts';
 import { findPath } from './pathfinding.ts';
 import { dist, stepToward, resolveCircleAxis } from '../shared/physics.ts';
 import { T_FLOOR } from '../shared/maps.ts';
@@ -138,14 +139,24 @@ export class ZombieRoom extends Room {
 
   override inputAllowed(): boolean { return this.state === 'break' || this.state === 'wave'; }
 
-  // Arm a saved checkpoint from a joining client. Only honored while the room
-  // is still fresh (first human, nothing started) so a later joiner can't
-  // yank an in-progress run to a different wave. Wire input: validate hard.
-  applyCheckpoint(raw: unknown): void {
+  /**
+   * Arm the room at a resume point taken from the creator's stored profile.
+   *
+   * The number comes from the database now, never from the client — that is the
+   * whole point of the profile: a saved checkpoint used to be a localStorage
+   * value the client declared on join, so anyone could start at wave 995.
+   *
+   * Only honored while the room is still fresh (first human, nothing started),
+   * the same rule index.ts applies to the bot roster: a later joiner inherits
+   * the match as it stands instead of yanking someone else's run to another
+   * wave. `resume` still gets validated hard — a stored row is trusted more
+   * than a socket, but not blindly.
+   */
+  arm(resume: number): void {
     let humans = 0;
     for (const p of this.players.values()) if (!p.bot) humans++;
     if (humans !== 1 || this.wave !== 0 || this.state !== 'break') return;
-    const n = Math.floor(Number(raw) / CHECKPOINT_EVERY) * CHECKPOINT_EVERY;
+    const n = Math.floor(Number(resume) / CHECKPOINT_EVERY) * CHECKPOINT_EVERY;
     if (!Number.isFinite(n) || n < CHECKPOINT_EVERY) return;
     this.checkpoint = Math.min(n, CHECKPOINT_MAX);
     this.wave = this.checkpoint - 1; // break ends -> startWave(checkpoint)
@@ -246,6 +257,13 @@ export class ZombieRoom extends Room {
   startWave(n: number): void {
     this.wave = n;
     if (n % CHECKPOINT_EVERY === 0 && n > this.checkpoint) this.checkpoint = n;
+    // Written per wave rather than at the end of the run: a pm2 restart mid-wave
+    // must not cost an hour of progress, and one UPDATE per human per ~60s is
+    // nothing. `earning` is what separates a run you could have started
+    // yourself from one you were carried through (see recordWave).
+    for (const p of this.players.values()) {
+      if (p.profileId) recordWave(p.profileId, n, p.earning);
+    }
     this.toSpawn = this.compose(n);
     this.spawnT = 0;
     this.state = 'wave';
@@ -334,6 +352,7 @@ export class ZombieRoom extends Room {
   }
 
   resetGame(): void {
+    this.flushAndClearStats(); // banked before the counters below are zeroed
     this.zombies.clear();
     this.pickups.clear();
     this.toSpawn = [];

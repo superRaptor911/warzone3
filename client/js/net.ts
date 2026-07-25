@@ -46,6 +46,16 @@ export class Net {
         if (!Number.isFinite(rtt)) return;
         this.ping = this.ping < 0 ? rtt : this.ping * 0.7 + rtt * 0.3;
       } else if (m.t === 'full') { this.connected = false; this.onClose?.('Room is full'); }
+      // Callsigns are claimed once and owned, so a first join can be refused.
+      // The menu checks availability before connecting, which leaves this for
+      // the race (two sockets claiming one name in the same millisecond) and for
+      // a client that skipped the check.
+      else if (m.t === 'namebad') {
+        this.connected = false;
+        this.onClose?.(m.why === 'reserved'
+          ? 'That callsign is reserved'
+          : 'That callsign was just taken — pick another');
+      }
     };
     this.ws.onclose = () => {
       const was = this.connected;

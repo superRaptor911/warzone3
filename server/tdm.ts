@@ -156,6 +156,7 @@ export class TDMRoom extends Room {
   resetMatch(): void {
     this.scores = [0, 0];
     this.matchEndAt = this.now + TDM_TIME_LIMIT_MS;
+    this.flushAndClearStats(); // banked before the counters below are zeroed
     for (const p of this.players.values()) {
       p.kills = 0; p.deaths = 0; p.damageDealt = 0;
       this.respawn(p);

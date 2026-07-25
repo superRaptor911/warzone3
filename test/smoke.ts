@@ -43,7 +43,10 @@ for (const name of ['compound', 'outbreak']) {
 // ---- 2. live server ----
 const PORT = 3199;
 const srv = spawn(process.execPath, ['server/index.ts'], {
-  env: { ...process.env, PORT: String(PORT) },
+  // In-memory profiles: this suite drives real joins, which claim names and
+  // write stats. Pointed at a file it would litter (and eventually collide with)
+  // a real player's record.
+  env: { ...process.env, PORT: String(PORT), WZ3_DB: ':memory:' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let srvErr = '';
@@ -60,18 +63,29 @@ interface TestClient<S extends Snapshot> {
   welcome: WelcomeMsg | null;
   snaps: S[];
   events: GameEvent[];
+  /** Why the join was refused ('namebad'/'full'), if it was. */
+  rejected: string | null;
 }
 
 function client<S extends Snapshot>(joinMsg: object): TestClient<S> {
   const ws = new WebSocket(`ws://localhost:${PORT}`);
-  const c: TestClient<S> = { ws, welcome: null, snaps: [], events: [] };
+  const c: TestClient<S> = { ws, welcome: null, snaps: [], events: [], rejected: null };
   ws.on('open', () => ws.send(JSON.stringify(joinMsg)));
   ws.on('message', (buf) => {
     const m = JSON.parse(String(buf));
     if (m.t === 'welcome') c.welcome = m;
     if (m.t === 'snap') { c.snaps.push(m); for (const e of m.events) c.events.push(e); }
+    if (m.t === 'namebad' || m.t === 'full') c.rejected = m.t + (m.why ? ':' + m.why : '');
   });
   return c;
+}
+
+// The profile API. Read-only by design, so a GET is the whole surface.
+async function apiGet(path: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`http://localhost:${PORT}${path}`);
+  let body: any = null;
+  try { body = await r.json(); } catch { /* non-json error page */ }
+  return { status: r.status, body };
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -82,6 +96,32 @@ const a = client<TdmSnapshot>({ t: 'join', name: 'Alice', mode: 'tdm', primary: 
 await sleep(500);
 check(a.welcome && a.welcome.mode === 'tdm', 'welcome received with map');
 check(a.welcome!.map.tiles.length === a.welcome!.map.w * a.welcome!.map.h, 'map serialized');
+
+// The first join mints a profile and claims the callsign.
+const alicePid = a.welcome!.pid!;
+check(/^[0-9a-f]{32}$/.test(alicePid || ''), `welcome carries a profile token (${alicePid})`);
+check(a.welcome!.name === 'Alice', 'and the callsign the profile owns');
+{
+  const got = await apiGet(`/api/profile?id=${alicePid}`);
+  check(got.status === 200 && got.body.name === 'Alice', 'GET /api/profile serves it');
+  check(got.body.bestWave === 0 && got.body.tdmKills === 0, 'a fresh profile reads as empty');
+  const miss = await apiGet('/api/profile?id=' + 'f'.repeat(32));
+  check(miss.status === 404, 'an unknown token 404s — what makes a bad recovery code visible');
+  check((await apiGet('/api/name?n=Alice')).body.free === false, 'the claimed name is not free');
+  check((await apiGet('/api/name?n=alice')).body.free === false, 'and neither is its case-fold');
+  check((await apiGet('/api/name?n=Nomad')).body.free === true, 'an unclaimed name is free');
+  const res = await apiGet('/api/name?n=' + encodeURIComponent('BOT Viper'));
+  check(res.body.free === false && res.body.why === 'reserved', 'the BOT prefix is refused');
+  const sug = await apiGet('/api/name');
+  check(typeof sug.body.suggestion === 'string' && sug.body.suggestion.length > 0,
+    `a blank query returns a suggestion (${sug.body.suggestion})`);
+}
+
+// Claiming a taken callsign is refused at the socket, and never consumes a seat.
+const dup = client<TdmSnapshot>({ t: 'join', name: 'ALICE', mode: 'tdm' });
+await sleep(400);
+check(dup.rejected === 'namebad:taken' && !dup.welcome, `a duplicate callsign is refused (${dup.rejected})`);
+dup.ws.close();
 
 let snap = a.snaps[a.snaps.length - 1];
 check(snap.players.length === 10, `join filled both teams to 5v5 (got ${snap.players.length})`);
@@ -138,6 +178,17 @@ check(snap.self!.slots[1] === 'shotgun', 'loadout change applied');
 a.ws.close();
 await sleep(300);
 
+// A returning player is their token, not their typed name: the wire cannot
+// rename them, and the room shows the name the profile owns.
+const back = client<TdmSnapshot>({ t: 'join', name: 'Impostor', mode: 'tdm', pid: alicePid });
+await sleep(500);
+check(back.welcome!.name === 'Alice', `a token overrides the name on the wire (${back.welcome!.name})`);
+check(back.welcome!.pid === alicePid, 'and mints nothing new');
+check(back.snaps[back.snaps.length - 1].players.some(p => p.name === 'Alice'),
+  'so the scoreboard shows the owned callsign');
+back.ws.close();
+await sleep(300);
+
 // --- Zombie ---
 console.log('mode: zombie');
 // bots:3 = a total squad size in zombie mode, i.e. two squadmates
@@ -187,12 +238,63 @@ for (let i = 0; i < 100 && !zombieDamaged; i++) {
   }
 }
 check(zombieDamaged, 'zombies taking damage from survivors/bots');
+
+// Keep firing until *this* player lands a kill of their own, so the persistence
+// check below has a real number to compare instead of 0 = 0. Bounded: bots may
+// take every killing blow, and the flush assertion holds either way.
+//
+// The fire flag has to *alternate*: the pistol is semi-auto and the server edge-
+// detects on firePrev, so a held flag is exactly one round for the whole match
+// (the same reason server/bot.ts has fireTick and touch.ts has tickFireCadence).
+// Reloads go in periodically too — 12 rounds do not kill a wave.
+for (let i = 0; i < 90; i++) {
+  zsnap = z.snaps[z.snaps.length - 1];
+  const meZ = zsnap.players.find(p => p.id === z.welcome!.id);
+  if (meZ && meZ.k > 0) break;
+  await sleep(150);
+  if (meZ && zsnap.zombies.length) {
+    let best = zsnap.zombies[0], bd = Infinity;
+    for (const t of zsnap.zombies) {
+      const d = Math.hypot(t.x - meZ.x, t.y - meZ.y);
+      if (d < bd) { bd = d; best = t; }
+    }
+    const aim = Math.atan2(best.y - meZ.y, best.x - meZ.x);
+    z.ws.send(JSON.stringify({ t: 'input', seq: ++seq, dt: 0.05, keys: {}, aim, fire: i % 2 === 0 }));
+    if (i % 12 === 11) z.ws.send(JSON.stringify({ t: 'reload' }));
+  }
+}
 z.ws.send(JSON.stringify({ t: 'buy', item: 'smg' }));
 await sleep(300);
 zsnap = z.snaps[z.snaps.length - 1];
 check(zsnap.self!.slots.includes('smg') || zsnap.self!.points < 400, 'buy processed');
+const bobPid = z.welcome!.pid!;
+// What the match itself last reported for him. Kills cannot move after this: he
+// sends no further inputs, and a kill needs a shot.
+zsnap = z.snaps[z.snaps.length - 1];
+const bobEnd = zsnap.players.find(p => p.id === z.welcome!.id)!;
 z.ws.close();
-await sleep(300);
+await sleep(400);
+
+// Waves are recorded as they start; kills are banked when the socket closes.
+console.log('profiles');
+{
+  const got = await apiGet(`/api/profile?id=${bobPid}`);
+  check(got.status === 200 && got.body.name === 'Bob', 'the outbreak player has a profile');
+  check(got.body.bestWave >= 1, `reaching wave 1 was recorded (best ${got.body.bestWave})`);
+  check(got.body.resumeWave === 0, 'wave 1 is below the first checkpoint, so nothing to resume');
+  // The end-to-end flush: what the room counted is what the profile holds. Not
+  // "some kills happened" — bots may take every killing blow, and a test that
+  // depends on the pistol landing one is a test that fails on Tuesdays.
+  check(got.body.zKills === bobEnd.k,
+    `disconnect banked the match's kills (${got.body.zKills} = ${bobEnd.k})`);
+  check(got.body.zDeaths >= bobEnd.d,
+    `and its deaths (${got.body.zDeaths} >= ${bobEnd.d})`);
+  const board = await apiGet('/api/leaderboard');
+  check(board.status === 200 && Array.isArray(board.body.tdm) && Array.isArray(board.body.zombie),
+    'the leaderboard serves both modes');
+  check(!board.body.zombie.some((r: { name: string }) => r.name === 'Nomad'),
+    'and lists nobody who never played');
+}
 
 srv.kill();
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);
