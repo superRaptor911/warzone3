@@ -6,6 +6,8 @@ export type GameMode = 'tdm' | 'zombie';
 // TDM rooms are 'live'/'over'; zombie rooms are 'break'/'wave'/'over'.
 export type RoomState = 'live' | 'over' | 'break' | 'wave';
 export type ZombieTypeId = 'walker' | 'runner' | 'brute';
+/** Outbreak floor loot. Same two effects the shop sells, for free and rarely. */
+export type PickupKind = 'ammo' | 'health';
 
 export interface Vec2 { x: number; y: number }
 
@@ -60,6 +62,7 @@ export type GameEvent =
   | { e: 'matchend'; winner: number }
   | { e: 'matchstart' }
   | { e: 'buy'; id: number; item: string }
+  | { e: 'pick'; pid: number; kind: PickupKind; x: number; y: number }
   | { e: 'revive'; id: number }
   | { e: 'join'; name: string; team: number }
   | { e: 'leave'; name: string };
@@ -71,6 +74,10 @@ export interface PlayerSnap {
   w: WeaponId; rld: 0 | 1;
   k: number; d: number; prot: 0 | 1;
   spr: number;
+}
+
+export interface PickupSnap {
+  id: number; x: number; y: number; kind: PickupKind;
 }
 
 export interface ZombieSnap {
@@ -119,6 +126,7 @@ export interface ZombieModeState {
   mode: 'zombie';
   wave: number;
   zombies: ZombieSnap[];
+  pk: PickupSnap[]; // supply crates on the floor
   left: number;
   breakT: number;
   restartT: number;

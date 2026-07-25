@@ -14,6 +14,7 @@
 // and is drawn centred on (0,0) inside a circle of the given radius R. Nothing
 // may extend past R: the silhouette is the hitbox.
 import type { WeaponId } from '../../../shared/weapons.ts';
+import type { PickupKind } from '../../../shared/types.ts';
 
 type Ctx = CanvasRenderingContext2D;
 const TAU = Math.PI * 2;
@@ -31,6 +32,52 @@ export const BODY_SS = 2;
 
 export function bodyKey(kind: BodyKind, frame: number | 'idle'): string {
   return `body-${kind}-${frame}`;
+}
+
+// ---- Outbreak supply crates ----
+// Named `pickup`, never `crate`, in code: shared/maps.ts already has T_CRATE
+// tiles, which are scenery you take cover behind rather than loot.
+// Greyscale like the bodies, tinted per kind at runtime (gfx/textures.ts), and
+// bright-biased for the same reason: the lightmap does not reach them but the
+// floor they sit on is rgb(24..30), so a dark crate is a smudge. The two kinds
+// differ in silhouette as well as tint — a lid strap and a cross — because a
+// player glancing at a distant blip should not have to resolve a hue.
+export const PICKUP_SS = 2; // baked supersampled, like the bodies
+
+export function pickupKey(kind: PickupKind): string { return `pickup-${kind}`; }
+
+export function drawPickup(g: Ctx, kind: PickupKind, r: number): void {
+  // Box side. The corners plus half the keyline are what reach furthest, and
+  // they must stay inside r like every other silhouette here:
+  // (1.25/2)*sqrt(2) + 0.16/2 = 0.96 of the radius, same band as the bodies.
+  const s = r * 1.25;
+  g.lineJoin = 'round';
+  // body, with a lighter top face so it reads as a box from above
+  g.fillStyle = '#8d8d8d';
+  g.fillRect(-s / 2, -s / 2, s, s);
+  g.fillStyle = '#b4b4b4';
+  g.fillRect(-s / 2, -s / 2, s, s * 0.30);
+  // keyline, same trick the guns use: a dark outline is what makes it read
+  // against both the floor and a body standing on it
+  g.strokeStyle = '#4a4a4a';
+  g.lineWidth = Math.max(1, r * 0.16);
+  g.strokeRect(-s / 2, -s / 2, s, s);
+  if (kind === 'health') {
+    // a cross, drawn as two bars so it stays crisp at the bake size
+    const t = s * 0.22, arm = s * 0.62;
+    g.fillStyle = '#f2f2f2';
+    g.fillRect(-t / 2, -arm / 2, t, arm);
+    g.fillRect(-arm / 2, -t / 2, arm, t);
+  } else {
+    // three rounds standing in a row
+    g.fillStyle = '#efefef';
+    for (let i = -1; i <= 1; i++) {
+      const bw = s * 0.14, bh = s * 0.50;
+      g.fillRect(i * s * 0.24 - bw / 2, -bh / 2, bw, bh);
+    }
+    g.fillStyle = '#4a4a4a';
+    g.fillRect(-s * 0.42, -s * 0.06, s * 0.84, s * 0.12); // strap across them
+  }
 }
 
 // Where each kind's head sits, in units of the entity radius. Off-hue overlay

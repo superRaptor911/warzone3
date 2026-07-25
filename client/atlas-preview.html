@@ -36,9 +36,9 @@
 <div id="out"></div>
 
 <script type="module">
-import { BODY_KINDS, WALK_FRAMES, GUN_SPEC, drawBody, drawGun }
+import { BODY_KINDS, WALK_FRAMES, GUN_SPEC, drawBody, drawPickup, drawGun }
   from '/js/gfx/art.ts';
-import { PLAYER_RADIUS, ZOMBIE_RADII } from '/shared/constants.ts';
+import { PICKUP_RADIUS, PLAYER_RADIUS, ZOMBIE_RADII } from '/shared/constants.ts';
 import { WEAPONS } from '/shared/weapons.ts';
 
 const RADIUS = {
@@ -47,10 +47,11 @@ const RADIUS = {
   runner: ZOMBIE_RADII.runner,
   brute: ZOMBIE_RADII.brute,
 };
-// runtime tints from gfx/textures.ts (TEAM_COLORS.body / ZTYPE.color)
+// runtime tints from gfx/textures.ts (TEAM_COLORS.body / ZTYPE.color / PICKUP_COLORS)
 const TINT = {
   player: '#c94439', walker: '#5d8a42', runner: '#8fb457', brute: '#39602c',
 };
+const CRATE_TINT = { ammo: '#8fd6ff', health: '#9fe870' };
 
 const out = document.getElementById('out');
 const $ring = document.getElementById('ring');
@@ -59,6 +60,20 @@ const $zoom = document.getElementById('zoom');
 
 // Emulates a Pixi sprite tint: multiply the greyscale ramp by the colour, then
 // restore the original alpha mask (a bare multiply fill would flood the cell).
+function tintCanvas(grey, tint) {
+  const c = document.createElement('canvas');
+  c.width = grey.width; c.height = grey.height;
+  const x = c.getContext('2d');
+  x.drawImage(grey, 0, 0);
+  x.globalCompositeOperation = 'multiply';
+  x.fillStyle = tint;
+  x.fillRect(0, 0, c.width, c.height);
+  x.globalCompositeOperation = 'destination-in';
+  x.drawImage(grey, 0, 0);
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
 function bodyCanvas(kind, R, ph, tint, ring) {
   const size = Math.ceil(2 * R) + 10;
   const grey = document.createElement('canvas');
@@ -70,15 +85,7 @@ function bodyCanvas(kind, R, ph, tint, ring) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const x = c.getContext('2d');
-  x.drawImage(grey, 0, 0);
-  if (tint) {
-    x.globalCompositeOperation = 'multiply';
-    x.fillStyle = tint;
-    x.fillRect(0, 0, size, size);
-    x.globalCompositeOperation = 'destination-in';
-    x.drawImage(grey, 0, 0);
-    x.globalCompositeOperation = 'source-over';
-  }
+  x.drawImage(tint ? tintCanvas(grey, tint) : grey, 0, 0);
   if (ring) {
     x.translate(size / 2, size / 2);
     x.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -206,6 +213,34 @@ function render() {
     out.appendChild(label);
     row(nodes);
   }
+
+  section('supply crates — Outbreak floor loot',
+    'Greyscale bakes tinted per kind, drawn above the lightmap so they read at the ambient floor. '
+    + 'The two kinds differ in silhouette as well as hue, because a distant blip is a shape before it is a colour.');
+  const crateNodes = [];
+  for (const kind of ['ammo', 'health']) {
+    const R = PICKUP_RADIUS * Z;
+    const size = Math.ceil(2 * R) + 10;
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const x = c.getContext('2d');
+    const grey = document.createElement('canvas');
+    grey.width = grey.height = size;
+    const gx = grey.getContext('2d');
+    gx.translate(size / 2, size / 2);
+    drawPickup(gx, kind, R);
+    x.drawImage(tinted ? tintCanvas(grey, CRATE_TINT[kind]) : grey, 0, 0);
+    if (ring) {
+      x.save();
+      x.translate(size / 2, size / 2);
+      x.strokeStyle = 'rgba(255,255,255,0.35)';
+      x.setLineDash([3, 3]);
+      x.beginPath(); x.arc(0, 0, R, 0, Math.PI * 2); x.stroke();
+      x.restore();
+    }
+    crateNodes.push(box(c, kind));
+  }
+  row(crateNodes);
 
   section('gun in hands — world sprite over the player body',
     'The gun is a separate sprite drawn above the body, anchored GUN_START px ahead of centre so it lands in the baked empty hands.');

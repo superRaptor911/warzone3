@@ -55,3 +55,16 @@ export const SHOP: Record<ShopItemId, { cost: number }> = {
 };
 
 export const ZOMBIE_KILL_POINTS: Record<ZombieTypeId, number> = { walker: 10, runner: 15, brute: 60 };
+
+// ---- Outbreak supply crates ----
+// Deliberately as strong as the shop's own ammo/health rows and rare instead of
+// plentiful: two placed at each wave start, accumulating to a cap, so a wave
+// cleared without looting leaves its crates standing for the next one. Anything
+// weaker would be a chore to walk to; anything more frequent would retire the
+// 150/200 point shop rows the bots also buy from.
+export const PICKUP_RADIUS = 13;
+export const PICKUPS_PER_WAVE = 2;
+export const MAX_PICKUPS = 4;
+// Minimum distance from every survivor spawn. Without it the compound (where
+// the squad already stands, and respawns) collects the crates for free.
+export const PICKUP_SPAWN_CLEAR = 400;

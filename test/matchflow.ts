@@ -3,9 +3,10 @@ import { TDMRoom } from '../server/tdm.ts';
 import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
 import {
   TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
-  TICK_RATE, PLAYER_SPEED, PLAYER_HP,
+  TICK_RATE, PLAYER_SPEED, PLAYER_HP, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
 } from '../shared/constants.ts';
 import { Grid, T_FLOOR } from '../shared/maps.ts';
+import { createPickup } from '../server/entities.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
@@ -195,6 +196,96 @@ console.log('zombie match flow');
   room.buy(p2, 'rifle');
   room.buy(p2, 'rifle');
   check(p2.points === 10000 - 800, 'no double-purchase of owned weapon');
+  room.destroy();
+}
+
+// ---- Zombie: supply crates ----
+// Full-strength (a shop ammo refill / a full heal) and rare rather than
+// plentiful, so what has to hold is the scarcity: where they land, that they
+// accumulate rather than pile up without limit, and who may take one.
+console.log('zombie supply crates');
+{
+  const room = new ZombieRoom('z4');
+  const h = room.addPlayer({ name: 'H', bot: false })!;
+  const bot = room.addPlayer({ name: 'B', bot: true })!;
+
+  check(room.pickups.size === 0, 'a fresh room has no crates on the floor');
+  room.startWave(1);
+  check(room.pickups.size === PICKUPS_PER_WAVE, `wave 1 places ${PICKUPS_PER_WAVE} crates`);
+
+  // placement: on floor, and far enough out that the compound cannot farm them
+  let onFloor = true, clear = true;
+  for (const c of room.pickups.values()) {
+    if (room.grid.solidAtPx(c.x, c.y)) onFloor = false;
+    for (const sp of room.grid.survivorSpawns) {
+      if (Math.hypot(c.x - sp.x, c.y - sp.y) < PICKUP_SPAWN_CLEAR) clear = false;
+    }
+  }
+  check(onFloor, 'every crate lands on open floor');
+  check(clear, `and none within ${PICKUP_SPAWN_CLEAR}px of a survivor spawn`);
+
+  // uncollected crates persist across waves, up to the cap
+  room.startWave(2);
+  check(room.pickups.size === MAX_PICKUPS, `uncollected crates accumulate to the cap (${room.pickups.size})`);
+  room.startWave(3);
+  check(room.pickups.size === MAX_PICKUPS, 'and the cap holds');
+
+  // ---- collection ----
+  const put = (kind: 'ammo' | 'health', x: number, y: number) => {
+    room.pickups.clear();
+    const c = createPickup(kind, x, y);
+    room.pickups.set(c.id, c);
+    return c;
+  };
+  // a hurt human standing on a medkit takes it
+  h.hp = 40;
+  const med = put('health', h.x, h.y);
+  room.collectPickups();
+  check(h.hp === PLAYER_HP && room.pickups.size === 0, `a hurt human takes the medkit (hp ${h.hp})`);
+  check(room.events.some(e => e.e === 'pick'), 'and the pickup is announced');
+
+  // ...but a healthy one leaves it standing, exactly as the shop refuses a heal
+  put('health', h.x, h.y);
+  room.collectPickups();
+  check(room.pickups.size === 1, 'a human at full health leaves the medkit on the floor');
+
+  // ammo: refused when topped up, taken when not
+  room.events.length = 0;
+  put('ammo', h.x, h.y);
+  room.collectPickups();
+  check(room.pickups.size === 1, 'a human with full ammo leaves the ammo crate too');
+  h.ammo[h.slots[0]]!.reserve = 0;
+  room.collectPickups();
+  check(room.pickups.size === 0 && h.ammo[h.slots[0]]!.reserve > 0, 'and takes it once short');
+
+  // bots walk over crates without consuming them: a squadmate hoovering a rare
+  // full refill it did not need is the one way this makes the game worse
+  bot.hp = 30;
+  bot.ammo[bot.slots[0]]!.reserve = 0;
+  const b1 = put('health', bot.x, bot.y);
+  room.collectPickups();
+  check(room.pickups.has(b1.id) && bot.hp === 30, 'a bot squadmate walks over a medkit without taking it');
+  const b2 = put('ammo', bot.x, bot.y);
+  room.collectPickups();
+  check(room.pickups.has(b2.id) && bot.ammo[bot.slots[0]]!.reserve === 0, 'and over an ammo crate too');
+
+  // a downed human is not a collector either
+  h.alive = false;
+  h.hp = 10;
+  const dead = put('health', h.x, h.y);
+  room.collectPickups();
+  check(room.pickups.has(dead.id), 'a downed human does not collect');
+  h.alive = true;
+
+  // a squad wipe resets the world, crates included
+  room.resetGame();
+  check(room.pickups.size === 0, 'a squad wipe clears the floor');
+
+  check(room.modeSnapshot().pk.length === 0, 'the snapshot carries the crate list');
+  room.startWave(1);
+  const snapPk = room.modeSnapshot().pk;
+  check(snapPk.length === PICKUPS_PER_WAVE && snapPk.every(c => c.kind === 'ammo' || c.kind === 'health'),
+    'and it is populated once a wave places them');
   room.destroy();
 }
 

@@ -164,6 +164,9 @@ for (let i = 0; i < 26 && !waveStarted; i++) {
 }
 check(waveStarted, `wave started, zombies present (wave=${zsnap.wave}, zombies=${zsnap.zombies.length})`);
 check(z.events.some(e => e.e === 'wave'), 'wave event emitted');
+// crates are placed at wave start and ride the zombie snapshot
+check(zsnap.pk.length === 2 && zsnap.pk.every(c => c.kind === 'ammo' || c.kind === 'health'),
+  `supply crates reach the client (${zsnap.pk.map(c => c.kind).join(', ') || 'none'})`);
 
 // let bots fight zombies; poll up to 15s for any zombie damage while we
 // keep firing at the nearest one (they walk in from the map edges)

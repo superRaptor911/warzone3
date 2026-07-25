@@ -1,15 +1,22 @@
 import { Assets, Rectangle, Sprite, Texture } from 'pixi.js';
 import type { Spritesheet } from 'pixi.js';
-import { PLAYER_RADIUS, TEAM, TILE, ZOMBIE_RADII } from '../../../shared/constants.ts';
+import { PICKUP_RADIUS, PLAYER_RADIUS, TEAM, TILE, ZOMBIE_RADII } from '../../../shared/constants.ts';
 import { T_CRATE, T_FLOOR, T_WALL, type Grid } from '../../../shared/maps.ts';
 import { WEAPONS, type WeaponId } from '../../../shared/weapons.ts';
-import type { ZombieTypeId } from '../../../shared/types.ts';
+import type { PickupKind, ZombieTypeId } from '../../../shared/types.ts';
 import {
-  BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, WALK_FRAMES,
-  bodyKey, drawBody, drawGun, gunKey, type BodyKind,
+  BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, PICKUP_SS, WALK_FRAMES,
+  bodyKey, drawBody, drawPickup, drawGun, gunKey, pickupKey, type BodyKind,
 } from './art.ts';
 
-export { gunKey };
+export { gunKey, pickupKey };
+
+// Supply crates: greyscale bakes, tinted per kind at draw time. Semantic
+// colours, so they live here beside TEAM_COLORS rather than in the art.
+export const PICKUP_COLORS: Record<PickupKind, number> = {
+  ammo: 0x8fd6ff,
+  health: 0x9fe870,
+};
 
 export interface TeamColor { body: string; dark: string; name: string }
 export const TEAM_COLORS: Record<number, TeamColor> = {
@@ -339,6 +346,16 @@ function bakeAtlas(): Atlas {
     g.fillStyle = '#fff';
     g.beginPath(); g.ellipse(12, 8, 10, 6, 0, 0, 7); g.fill();
   });
+
+  // supply crates, baked at the collision radius they are collected at
+  for (const kind of ['ammo', 'health'] as PickupKind[]) {
+    const R = PICKUP_RADIUS * PICKUP_SS;
+    const size = Math.ceil(2 * R) + 2;
+    cell(pickupKey(kind), size, size, 0.5, 0.5, g => {
+      g.translate(size / 2, size / 2);
+      drawPickup(g, kind, R);
+    });
+  }
 
   // soft radial falloff for lights (phase 2)
   cell('radial', 128, 128, 0.5, 0.5, g => {

@@ -359,6 +359,17 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
       // so a menu that shuts can only mean the buy landed.
       if (e.id === myId) { audio.cash(); hud.shopHintDone = true; hud.toggleBuy(false); }
       break;
+    case 'pick':
+      // Server-authoritative like the shop: it refuses a crate you cannot use
+      // (full health, full ammo) and says nothing, so this event arriving is
+      // itself the confirmation that the pickup landed. Own pickups only, the
+      // same rule the `buy` event follows — a squadmate looting across the map
+      // is not news.
+      if (e.pid === myId) {
+        audio.cash();
+        hud.banner(e.kind === 'ammo' ? 'AMMO RESUPPLIED' : 'PATCHED UP', 1600);
+      }
+      break;
     case 'revive':
       if (e.id === myId) hud.banner('BACK IN THE FIGHT', 2000);
       break;
@@ -673,6 +684,9 @@ function loop(t: number): void {
     me: { x: mePos.x, y: mePos.y, aim },
     players: interp.players,
     zombies: interp.zombies,
+    // straight off the newest snapshot, not the interpolated view: crates never
+    // move, so there is nothing to interpolate and nothing to render in the past
+    pickups: snap.mode === 'zombie' ? snap.pk : [],
     fx, spread: effSpread,
   });
 

@@ -15,6 +15,7 @@ export class UiLayer {
   private chevrons: Sprite[] = [];
   private mini: Sprite;
   private blips: Sprite[] = [];
+  private lootBlips: Sprite[] = [];
   private layers: Layers;
   private tx: GfxTextures;
 
@@ -144,5 +145,27 @@ export class UiLayer {
       }
     }
     for (let i = used; i < this.blips.length; i++) this.blips[i].visible = false;
+
+    // Supply crates are marked because they are rare, persistent and easy to
+    // walk past in the dark; the minimap already shows every live zombie with
+    // no LOS gating, so this gives away strictly less than it already does.
+    // Drawn as SQUARES, not discs: in Outbreak every survivor is a green dot
+    // and TEAM_COLORS[SURVIVOR].name is the same green a medkit wants, so
+    // colour alone could not say "object, not person".
+    let loot = 0;
+    for (const c of view.pickups) {
+      let s = this.lootBlips[loot];
+      if (!s) {
+        s = this.tx.sprite('white');
+        s.anchor.set(0.5, 0.5);
+        s.scale.set(5 / 8);
+        this.lootBlips.push(this.layers.minimap.addChild(s));
+      }
+      s.visible = true;
+      s.position.set(c.x * scale, c.y * scale);
+      s.tint = c.kind === 'ammo' ? '#8fd6ff' : '#9fe870';
+      loot++;
+    }
+    for (let i = loot; i < this.lootBlips.length; i++) this.lootBlips[i].visible = false;
   }
 }

@@ -1,7 +1,7 @@
 import { Application, Rectangle } from 'pixi.js';
 import type { Grid } from '../../../shared/maps.ts';
 import type { WeaponId } from '../../../shared/weapons.ts';
-import type { PlayerSnap, Vec2, ZombieSnap } from '../../../shared/types.ts';
+import type { PlayerSnap, Vec2, ZombieSnap, PickupSnap } from '../../../shared/types.ts';
 import { gunMuzzle } from './art.ts';
 import type { Fx } from '../fx.ts';
 import { zoomFor } from '../view.ts';
@@ -21,6 +21,7 @@ export interface DrawView {
   me: { x: number; y: number; aim: number };
   players: PlayerSnap[];
   zombies: ZombieSnap[];
+  pickups: PickupSnap[]; // Outbreak supply crates (empty in TDM)
   fx: Fx;
   spread: number;
 }
@@ -165,6 +166,7 @@ export class Renderer {
     this.scene.setTextScale(textScale);
     this.fxs.setTextScale(textScale);
     this.scene.syncZombies(view.zombies, view.now);
+    this.scene.syncPickups(view.pickups, view.now);
     this.scene.syncPlayers(view.players, view.myId, view.me, view.now);
     this.fxs.sync(view.fx);
     this.lights.update(view, vw, vh, ox, oy, z);

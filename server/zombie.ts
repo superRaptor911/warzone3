@@ -1,15 +1,20 @@
 import { Room, type AddPlayerOpts, type Target } from './room.ts';
-import { createPlayer, refillAmmo, createZombie, setPrimary, makeAmmo, type Player, type Zombie } from './entities.ts';
+import {
+  createPlayer, refillAmmo, createZombie, setPrimary, makeAmmo, createPickup, ammoFull,
+  type Player, type Pickup, type Zombie,
+} from './entities.ts';
 import { createBotController, nextBotName } from './bot.ts';
 import { findPath } from './pathfinding.ts';
 import { dist, stepToward, resolveCircleAxis } from '../shared/physics.ts';
+import { T_FLOOR } from '../shared/maps.ts';
 import {
-  TEAM, PLAYER_RADIUS, PLAYER_HP, WAVE_BREAK_MS, MAX_ZOMBIES_ALIVE,
+  TEAM, TILE, PLAYER_RADIUS, PLAYER_HP, WAVE_BREAK_MS, MAX_ZOMBIES_ALIVE,
   MAX_SURVIVORS, MATCH_RESTART_MS, SHOP, ZOMBIE_KILL_POINTS, SPAWN_PROTECT_MS,
+  PICKUP_RADIUS, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
   type ShopItemId,
 } from '../shared/constants.ts';
 import type { WeaponId } from '../shared/weapons.ts';
-import type { Vec2, ZombieModeState, ZombieSnap, ZombieTypeId } from '../shared/types.ts';
+import type { PickupSnap, Vec2, ZombieModeState, ZombieSnap, ZombieTypeId } from '../shared/types.ts';
 
 const START_POINTS = 400;
 const BOT_BUY_ORDER: WeaponId[] = ['smg', 'rifle', 'sniper'];
@@ -35,6 +40,8 @@ export class ZombieRoom extends Room {
   waveAge: number;
   frenzyAnnounced: boolean;
   checkpoint: number;
+  pickups: Map<number, Pickup>;
+  pickupSpots: Vec2[];
 
   constructor(id: string) {
     super(id, 'zombie', 'outbreak');
@@ -48,6 +55,22 @@ export class ZombieRoom extends Room {
     this.restartT = 0;
     this.waveAge = 0;
     this.frenzyAnnounced = false;
+    this.pickups = new Map();
+    // Every floor tile far enough from the compound to be worth walking to,
+    // resolved once: the map never changes, and picking from a list beats
+    // rejection-sampling a grid that is mostly wall.
+    this.pickupSpots = [];
+    for (let ty = 1; ty < this.grid.h - 1; ty++) {
+      for (let tx = 1; tx < this.grid.w - 1; tx++) {
+        if (this.grid.get(tx, ty) !== T_FLOOR) continue;
+        const pt = { x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2 };
+        let clear = true;
+        for (const s of this.grid.survivorSpawns) {
+          if (dist(pt, s) < PICKUP_SPAWN_CLEAR) { clear = false; break; }
+        }
+        if (clear) this.pickupSpots.push(pt);
+      }
+    }
   }
 
   // Stragglers can't be kited forever: once a wave is nearly done (or drags on),
@@ -149,6 +172,58 @@ export class ZombieRoom extends Room {
     this.event({ e: 'buy', id: p.id, item: key });
   }
 
+  // ---- supply crates ----
+  // Placed at wave start and left standing until someone walks over them, so
+  // they accumulate: clear a wave without looting and the crates are still
+  // there for the next one, up to MAX_PICKUPS.
+  placePickups(n: number): void {
+    if (!this.pickupSpots.length) return;
+    for (let i = 0; i < n && this.pickups.size < MAX_PICKUPS; i++) {
+      let spot: Vec2 | null = null;
+      // A handful of tries, then give up for this crate rather than loop: the
+      // only failure mode is a spot already occupied, and the map has hundreds.
+      for (let tries = 0; tries < 12 && !spot; tries++) {
+        const cand = this.pickupSpots[Math.floor(Math.random() * this.pickupSpots.length)];
+        let free = true;
+        for (const q of this.pickups.values()) {
+          if (dist(cand, q) < TILE * 2) { free = false; break; }
+        }
+        if (free) spot = cand;
+      }
+      if (!spot) continue;
+      const kind = Math.random() < 0.5 ? 'ammo' : 'health';
+      const c = createPickup(kind, spot.x, spot.y);
+      this.pickups.set(c.id, c);
+    }
+  }
+
+  /**
+   * Hand a crate to anyone standing on it. Humans only — bots already have a
+   * free income stream through botBuy at every wave break, and a squadmate
+   * hoovering a rare full refill it did not need is the one way this feature
+   * makes the game worse. A player who cannot use the crate leaves it standing,
+   * exactly as ZombieRoom.buy refuses a heal at full health.
+   */
+  collectPickups(): void {
+    if (!this.pickups.size) return;
+    const reach = PLAYER_RADIUS + PICKUP_RADIUS;
+    for (const p of this.players.values()) {
+      if (p.bot || !p.alive) continue;
+      for (const c of this.pickups.values()) {
+        if (dist(p, c) > reach) continue;
+        if (c.kind === 'health') {
+          if (p.hp >= PLAYER_HP) continue;
+          p.hp = PLAYER_HP;
+        } else {
+          if (ammoFull(p)) continue;
+          refillAmmo(p);
+        }
+        this.pickups.delete(c.id);
+        this.event({ e: 'pick', pid: p.id, kind: c.kind, x: Math.round(c.x), y: Math.round(c.y) });
+      }
+    }
+  }
+
   // ---- waves ----
   compose(wave: number): ZombieTypeId[] {
     const alive = Math.max(1, this.players.size);
@@ -176,6 +251,7 @@ export class ZombieRoom extends Room {
     this.state = 'wave';
     this.waveAge = 0;
     this.frenzyAnnounced = false;
+    this.placePickups(PICKUPS_PER_WAVE);
     this.event({ e: 'wave', n, count: this.toSpawn.length });
   }
 
@@ -259,6 +335,7 @@ export class ZombieRoom extends Room {
 
   resetGame(): void {
     this.zombies.clear();
+    this.pickups.clear();
     this.toSpawn = [];
     this.wave = this.checkpoint > 0 ? this.checkpoint - 1 : 0; // resume at the checkpoint wave
     for (const p of this.players.values()) {
@@ -276,6 +353,9 @@ export class ZombieRoom extends Room {
   }
 
   override modeUpdate(dt: number): void {
+    // Every state including the break: looting between waves is the point of
+    // leaving the compound while nothing is chasing you.
+    this.collectPickups();
     if (this.state === 'break') {
       this.breakT -= dt;
       if (this.breakT <= 0 && this.players.size > 0) this.startWave(this.wave + 1);
@@ -400,10 +480,19 @@ export class ZombieRoom extends Room {
     return out;
   }
 
+  pickupSnapshot(): PickupSnap[] {
+    const out: PickupSnap[] = [];
+    for (const c of this.pickups.values()) {
+      out.push({ id: c.id, x: c.x, y: c.y, kind: c.kind });
+    }
+    return out;
+  }
+
   override modeSnapshot(): ZombieModeState {
     return {
       mode: 'zombie', wave: this.wave,
       zombies: this.zombieSnapshot(),
+      pk: this.pickupSnapshot(),
       left: this.toSpawn.length + this.zombies.size,
       breakT: this.state === 'break' ? Math.ceil(this.breakT) : 0,
       restartT: this.state === 'over' ? Math.ceil(this.restartT) : 0,

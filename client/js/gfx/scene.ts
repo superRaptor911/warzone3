@@ -1,9 +1,9 @@
 import { Container, Sprite, Text } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters';
 import { PLAYER_RADIUS, TEAM } from '../../../shared/constants.ts';
-import type { PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
-import { DISC_R, GfxTextures, TEAM_COLORS, ZTYPE, gunKey, ringKey } from './textures.ts';
-import { BODY_SS, GUN_SS, HEAD, WALK_FRAMES, bodyKey, type BodyKind } from './art.ts';
+import type { PickupSnap, PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
+import { DISC_R, GfxTextures, PICKUP_COLORS, TEAM_COLORS, ZTYPE, gunKey, pickupKey, ringKey } from './textures.ts';
+import { BODY_SS, GUN_SS, HEAD, PICKUP_SS, WALK_FRAMES, bodyKey, type BodyKind } from './art.ts';
 
 // Stage layer tree. Order is load-bearing (encodes the old painter's order):
 // world (lit, phase 2 darkens it) < light slot < worldFx (emissive/floats,
@@ -16,6 +16,7 @@ export interface Layers {
   fxTop: Container;    // sparks/blood (P4: shells/smoke ParticleContainers)
   lightSlot: Container; // P2 puts the multiply-blended lightmap sprite here
   worldFx: Container;
+  pickups: Container;  // supply crates — above the lightmap, so never darkened
   emissive: Container; // tracers, muzzle flashes (P3: bloom filter here)
   floats: Container;   // damage numbers
   screenUi: Container; // chevrons, crosshair
@@ -31,6 +32,12 @@ export function buildLayers(stage: Container, bloom: boolean): Layers {
   world.addChild(ground, under, actors, fxTop);
   const lightSlot = new Container();
   const worldFx = new Container();
+  // Crates sit in worldFx beside the emissive layer rather than inside it, for
+  // two reasons: fxsync toggles `emissive.visible` off on idle frames (they
+  // would blink with tracer activity), and being inside it would keep the bloom
+  // filter running every frame of every Outbreak match for four sprites.
+  // Sitting above the lightmap is what actually makes them read in the dark.
+  const pickups = new Container();
   const emissive = new Container();
   // bloom only on the emissive layer (tracers/flashes) — map and UI stay crisp.
   // Purely cosmetic, so the `fast` quality tier drops it (see view.ts).
@@ -38,11 +45,14 @@ export function buildLayers(stage: Container, bloom: boolean): Layers {
     emissive.filters = [new AdvancedBloomFilter({ threshold: 0.1, bloomScale: 0.9, blur: 6, quality: 4 })];
   }
   const floats = new Container();
-  worldFx.addChild(emissive, floats);
+  worldFx.addChild(pickups, emissive, floats);
   const screenUi = new Container();
   const minimap = new Container();
   stage.addChild(world, lightSlot, worldFx, screenUi, minimap);
-  return { world, ground, under, actors, fxTop, lightSlot, worldFx, emissive, floats, screenUi, minimap };
+  return {
+    world, ground, under, actors, fxTop, lightSlot, worldFx, pickups, emissive, floats,
+    screenUi, minimap,
+  };
 }
 
 function makeBar(tx: GfxTextures, w: number, y: number): { bg: Sprite; fg: Sprite } {
@@ -254,6 +264,7 @@ export class Scene {
   private tx: GfxTextures;
   private players = new Map<number, PlayerVisual>();
   private zombies = new Map<number, ZombieVisual>();
+  private crates = new Map<number, Sprite>();
   private seen = new Set<number>();
   private textScale = 1;
 
@@ -310,10 +321,39 @@ export class Scene {
     }
   }
 
+  /**
+   * Supply crates. Pooled by id and mark-and-swept like the entity visuals, but
+   * a single sprite each — they do not move, they only appear and vanish.
+   * The alpha pulse is the whole of the "notice me": the lightmap does not
+   * darken this layer, so a still sprite would read as part of the floor art.
+   */
+  syncPickups(pickups: PickupSnap[], now: number): void {
+    this.seen.clear();
+    for (const c of pickups) {
+      this.seen.add(c.id);
+      let s = this.crates.get(c.id);
+      if (!s) {
+        s = this.tx.sprite(pickupKey(c.kind));
+        s.scale.set(1 / PICKUP_SS); // baked supersampled, see art.ts
+        s.tint = PICKUP_COLORS[c.kind];
+        s.position.set(c.x, c.y);
+        this.crates.set(c.id, s);
+        this.layers.pickups.addChild(s);
+      }
+      // slow, shallow, and offset per crate so a pair does not throb in unison
+      s.alpha = 0.82 + 0.18 * Math.sin(now / 320 + c.id);
+    }
+    for (const [id, s] of this.crates) {
+      if (!this.seen.has(id)) { s.destroy(); this.crates.delete(id); }
+    }
+  }
+
   destroy(): void {
     for (const v of this.players.values()) v.destroy();
     for (const v of this.zombies.values()) v.destroy();
+    for (const s of this.crates.values()) s.destroy();
     this.players.clear();
     this.zombies.clear();
+    this.crates.clear();
   }
 }

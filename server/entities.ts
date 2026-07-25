@@ -1,6 +1,6 @@
 import { WEAPONS, type Weapon, type WeaponId } from '../shared/weapons.ts';
 import { PLAYER_HP, STAMINA_MAX, ZOMBIE_RADII } from '../shared/constants.ts';
-import type { Ammo, InputMsg, Vec2, ZombieTypeId } from '../shared/types.ts';
+import type { Ammo, InputMsg, PickupKind, Vec2, ZombieTypeId } from '../shared/types.ts';
 import type { BotController } from './bot.ts';
 
 let nextEntityId = 1;
@@ -73,6 +73,29 @@ export function refillAmmo(p: Player): void {
     ammo.mag = w.mag;
     ammo.reserve = w.reserve;
   }
+}
+
+/** A supply crate lying on the Outbreak floor. Inert: it has no simulation of
+ *  its own, it is just a position a walking human can consume. */
+export interface Pickup {
+  id: number;
+  kind: PickupKind;
+  x: number; y: number;
+}
+
+export function createPickup(kind: PickupKind, x: number, y: number): Pickup {
+  return { id: newId(), kind, x, y };
+}
+
+/** Is every owned weapon topped up? An ammo crate refuses if so, and is left
+ *  standing rather than consumed — the same shape as the shop refusing a heal
+ *  at full health. */
+export function ammoFull(p: Player): boolean {
+  for (const wid of p.slots) {
+    const w = WEAPONS[wid], ammo = p.ammo[wid]!;
+    if (ammo.mag < w.mag || ammo.reserve < w.reserve) return false;
+  }
+  return true;
 }
 
 export const ZOMBIE_TYPES: Record<ZombieTypeId, {
