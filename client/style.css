@@ -38,9 +38,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: #dde3ea; user-sele
 #loadout-row, #gfx-row { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 12px 0 4px; }
 #gfx-row { margin: 8px 0 4px; }
 .loadout-label { font-size: 11px; letter-spacing: 2px; color: #6b7687; text-transform: uppercase; }
-#loadout-opts button, #gfx-opts button { padding: 6px 12px; margin: 0 2px; background: #0d1117; color: #9aa5b5;
-  border: 1px solid #2b3648; border-radius: 4px; cursor: pointer; font-size: 12px; }
-#loadout-opts button.sel, #gfx-opts button.sel { color: #fff; border-color: #e8483f; background: #241318; }
+#loadout-opts button, #gfx-opts button, #touch-opts button { padding: 6px 12px; margin: 0 2px;
+  background: #0d1117; color: #9aa5b5; border: 1px solid #2b3648; border-radius: 4px; cursor: pointer; font-size: 12px; }
+#loadout-opts button.sel, #gfx-opts button.sel, #touch-opts button.sel { color: #fff; border-color: #e8483f;
+  background: #241318; }
 .help { font-size: 11px; color: #596374; margin-top: 16px; letter-spacing: 1px; }
 #conn-status { margin-top: 10px; font-size: 13px; color: #e8a53f; min-height: 18px; }
 
@@ -173,3 +174,68 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: #dde3ea; user-sele
 #vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0;
   background: radial-gradient(ellipse at center, transparent 55%, rgba(180,20,10,.55) 100%); }
 #hitflash { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: rgba(255,40,20,.14); }
+
+/* ---------- touch controls ---------- */
+/* z-index 9 keeps the pads under #hud, which is pointer-events:none except for
+   its interactive children — so drags fall through to here, but a tap on the
+   armory or the bot bar still hits the HUD. */
+#touch { position: absolute; inset: 0; z-index: 9; touch-action: none;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+/* the pads and the orientation gate belong to a running match, not the menu —
+   the menu itself is perfectly usable in portrait */
+#menu:not(.hidden) ~ #touch, #menu:not(.hidden) ~ #rotate { display: none !important; }
+#touch button { pointer-events: auto; touch-action: none; min-width: 96px; padding: 13px 14px;
+  font: 700 12px/1 'Segoe UI', system-ui, sans-serif; letter-spacing: 2px; color: #c6cfdd;
+  background: rgba(14,19,28,.72); border: 1px solid rgba(96,112,138,.45); border-radius: 10px; }
+#touch button.down { background: rgba(44,57,77,.92); color: #fff; border-color: rgba(150,170,200,.7); }
+#tb-sprint.on { color: #ffd75e; border-color: rgba(217,177,63,.85); background: rgba(48,38,14,.8); }
+
+#dpad { position: absolute; width: 136px; height: 136px; border-radius: 50%;
+  left: calc(26px + env(safe-area-inset-left)); bottom: calc(26px + env(safe-area-inset-bottom));
+  background: radial-gradient(circle, rgba(20,26,36,.5) 0%, rgba(14,18,26,.28) 68%, rgba(14,18,26,0) 72%);
+  border: 1px solid rgba(96,112,138,.32); }
+.dp { position: absolute; width: 0; height: 0; opacity: .4; transition: opacity .06s; }
+.dp.on { opacity: 1; }
+.dp-w { top: 13px; left: 50%; margin-left: -9px;
+  border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 13px solid #cfd8e6; }
+.dp-s { bottom: 13px; left: 50%; margin-left: -9px;
+  border-left: 9px solid transparent; border-right: 9px solid transparent; border-top: 13px solid #cfd8e6; }
+.dp-a { left: 13px; top: 50%; margin-top: -9px;
+  border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-right: 13px solid #cfd8e6; }
+.dp-d { right: 13px; top: 50%; margin-top: -9px;
+  border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-left: 13px solid #cfd8e6; }
+
+/* floating: left/top are written inline at touchdown */
+#astick { position: absolute; width: 104px; height: 104px; margin: -52px 0 0 -52px; border-radius: 50%;
+  background: rgba(16,21,31,.34); border: 1px solid rgba(96,112,138,.34); }
+#aknob { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+  border-radius: 50%; background: rgba(232,72,63,.32); border: 1px solid rgba(255,130,120,.62); }
+
+#tbtns-left { position: absolute; display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
+  left: calc(26px + env(safe-area-inset-left)); bottom: calc(174px + env(safe-area-inset-bottom)); }
+#tbtns-right { position: absolute; display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+  right: calc(22px + env(safe-area-inset-right)); bottom: calc(118px + env(safe-area-inset-bottom)); }
+
+/* ---------- touch-mode HUD adjustments ---------- */
+body.touch #game { cursor: none; }
+body.touch #topbar { pointer-events: auto; }          /* tap to toggle the scoreboard */
+body.touch #botbar { top: 28%; transform: none; }     /* out of the aim-thumb arc */
+.bb-toggle { display: none; }
+body.touch .bb-toggle { display: block; }
+body.touch #botbar .bb-list { display: none; flex-direction: column; gap: 6px; margin-top: 6px; }
+body.touch #botbar.open .bb-list { display: flex; }
+#botbar .bb-list { display: flex; flex-direction: column; gap: 6px; }
+.kbd-only { display: revert; }
+body.touch .kbd-only { display: none; }
+.cm-btns { display: none; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+body.touch .cm-btns { display: flex; }
+.cm-btns button { pointer-events: auto; touch-action: none; padding: 10px 14px; font: 700 12px/1 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 2px; color: #c6cfdd; background: rgba(14,19,28,.85); border: 1px solid rgba(96,112,138,.5);
+  border-radius: 8px; }
+
+/* ---------- orientation gate ---------- */
+#rotate { display: none; position: absolute; inset: 0; z-index: 30; background: #07090d;
+  align-items: center; justify-content: center; text-align: center;
+  color: #cfd8e6; font-weight: 800; letter-spacing: 5px; font-size: 14px; }
+.rot-icon { display: block; font-size: 56px; margin-bottom: 16px; color: #e8483f; }
+@media (orientation: portrait) { body.touch #rotate { display: flex; } }

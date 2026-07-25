@@ -47,8 +47,15 @@
         <button data-q="sharp">SHARP</button>
         <button data-q="fast">FAST</button>
       </div>
+      <span class="loadout-label">touch</span>
+      <div id="touch-opts">
+        <button data-t="auto">AUTO</button>
+        <button data-t="on">ON</button>
+        <button data-t="off">OFF</button>
+      </div>
     </div>
-    <p class="help">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Tab scores</p>
+    <p class="help" id="help-kb">WASD move &middot; mouse aim/fire &middot; R reload &middot; 1/2 weapons &middot; Shift sprint &middot; B buy &middot; Tab scores</p>
+    <p class="help hidden" id="help-touch">left pad moves &middot; right thumb aims and fires &middot; buttons reload, swap and sprint &middot; tap the score bar for the scoreboard</p>
     <p id="conn-status"></p>
   </div>
 </div>
@@ -87,6 +94,27 @@
   <div id="vignette"></div>
   <div id="hitflash"></div>
 </div>
+
+<!-- Touch controls sit BELOW #hud (z-index 9 vs 10): #hud is pointer-events:none
+     except for its interactive children, so pad drags fall through while the
+     armory rows, bot bar and topbar keep taking their own taps. -->
+<div id="touch" class="hidden">
+  <div id="dpad">
+    <span class="dp dp-w"></span><span class="dp dp-a"></span>
+    <span class="dp dp-d"></span><span class="dp dp-s"></span>
+  </div>
+  <div id="astick" class="hidden"><div id="aknob"></div></div>
+  <div id="tbtns-left">
+    <button data-t="armory" id="tb-armory" class="hidden">ARMORY</button>
+    <button data-t="sprint" id="tb-sprint">SPRINT</button>
+  </div>
+  <div id="tbtns-right">
+    <button data-t="swap">SWAP</button>
+    <button data-t="reload">RELOAD</button>
+  </div>
+</div>
+
+<div id="rotate"><div><span class="rot-icon">⟳</span>ROTATE TO PLAY</div></div>
 
 <script type="module" src="/js/main.ts"></script>
 </body>

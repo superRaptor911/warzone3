@@ -10,12 +10,15 @@ import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
+import { DEAD_ZONE, newFireCadence, tickFireCadence } from './stick.ts';
+import { Touch, touchDefault, type TouchMode } from './touch.ts';
 import type { GameEvent, GameMode, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const net = new Net();
 const input = new Input(canvas);
+const touch = new Touch();
 const audio = new Audio();
 const fx = new Fx();
 
@@ -45,6 +48,17 @@ let deadFollow: Vec2 | null = null; // spectate target pos in zombie mode
 let specIdx = 0;                    // spectate selection, advanced by click while down
 let specName: string | null = null; // name of the squadmate being spectated
 
+// touch: synthesised fire edges for semi-autos, auto-reload throttle, and the
+// tap-toggled scoreboard (there is no Tab key to hold)
+const cadence = newFireCadence();
+let autoReloadT = 0;
+let scoresOpen = false;
+// camera pull toward the aim stick, in world px at full deflection — the
+// touch equivalent of the desktop mouse lead
+const TOUCH_LEAD = 140;
+// where the reticle sits along the aim ray, in world px
+const CROSS_DIST = 200;
+
 // ---------- menu ----------
 const nameInput = $('name-input') as HTMLInputElement;
 nameInput.value = localStorage.getItem('wz3-name') || '';
@@ -59,6 +73,47 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('#loadout-opts butt
     localStorage.setItem('wz3-primary', chosenPrimary);
   };
 }
+// touch controls: follow the device by default, overridable from the menu
+const storedT = localStorage.getItem('wz3-touch');
+let touchMode: TouchMode = storedT === 'on' || storedT === 'off' ? storedT : 'auto';
+function applyTouchMode(): void {
+  touch.setActive(touchMode === 'on' || (touchMode === 'auto' && touchDefault()));
+  $('help-kb').classList.toggle('hidden', touch.active);
+  $('help-touch').classList.toggle('hidden', !touch.active);
+  // these hints name a key that touch players do not have
+  $('reloadhint').textContent = touch.active ? 'RELOAD' : 'R — RELOAD';
+  $('shophint').textContent = touch.active ? 'ARMORY' : 'B — ARMORY';
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('#touch-opts button')) {
+  b.classList.toggle('sel', b.dataset.t === touchMode);
+  b.onclick = () => {
+    touchMode = b.dataset.t as TouchMode;
+    localStorage.setItem('wz3-touch', touchMode);
+    document.querySelectorAll('#touch-opts button').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+    applyTouchMode();
+  };
+}
+applyTouchMode();
+
+// tapping the score bar stands in for holding Tab
+$('topbar').addEventListener('pointerdown', (e) => {
+  if (!touch.active) return;
+  e.preventDefault();
+  scoresOpen = !scoresOpen;
+});
+
+// TDM death screen: the desktop 1-4 loadout keys as tap targets (delegated,
+// because centerMsg rewrites the overlay whenever its text changes)
+$('center-msg').addEventListener('pointerdown', (e) => {
+  const b = (e.target as HTMLElement).closest('[data-loadout]') as HTMLElement | null;
+  if (!b) return;
+  e.preventDefault();
+  const wname = b.dataset.loadout as WeaponId;
+  net.send({ t: 'primary', w: wname });
+  hud.banner(WEAPONS[wname].name.toUpperCase() + ' EQUIPPED', 1200);
+});
+
 // graphics tier picker — applied when the next match boots its Renderer
 for (const b of document.querySelectorAll<HTMLButtonElement>('#gfx-opts button')) {
   b.classList.toggle('sel', b.dataset.q === quality);
@@ -115,6 +170,8 @@ net.onWelcome = (m) => {
     onRemoveBot: (team) => net.send({ t: 'removeBot', team }),
     onBuy: (item) => net.send({ t: 'buy', item }),
   });
+  touch.showArmory(mode === 'zombie'); // mirrors the desktop B key
+  scoresOpen = false;
   // Renderer boot is async (WebGL init); snapshots arriving in the gap just
   // buffer in state. The token guards against a stale .then from a re-welcome.
   const boot = ++bootSeq;
@@ -194,10 +251,12 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
       audio.waveHorn();
       hud.centerMsg(null);
       break;
-    case 'break':
-      hud.banner(`WAVE CLEARED  ·  +$${e.bonus}` + (hud.shopHintDone ? '' : '  ·  PRESS B — ARMORY'), 3000);
+    case 'break': {
+      const hint = hud.shopHintDone ? '' : (touch.active ? '  ·  ARMORY' : '  ·  PRESS B — ARMORY');
+      hud.banner(`WAVE CLEARED  ·  +$${e.bonus}` + hint, 3000);
       audio.cash();
       break;
+    }
     case 'frenzy':
       hud.banner('FRENZY — THEY SMELL BLOOD', 2800);
       audio.waveHorn();
@@ -288,7 +347,8 @@ function loop(t: number): void {
     if (mode === 'zombie') {
       const living = interp.players.filter(p => p.alive && p.id !== myId);
       if (living.length) {
-        if (input.clicked && !hud.buyOpen) specIdx++;
+        const cycled = touch.active ? touch.tapped : input.clicked;
+        if (cycled && !hud.buyOpen) specIdx++;
         const target = living[specIdx % living.length];
         specName = target.name;
         deadFollow = { x: target.x, y: target.y };
@@ -304,29 +364,71 @@ function loop(t: number): void {
   // is 1 on any desktop-sized viewport, so this is the original math there.
   const zoom = renderer.zoom;
   const vw = renderer.screenW, vh = renderer.screenH;
-  const lead = {
-    x: ((input.mouse.x - vw / 2) * 0.1) / zoom,
-    y: ((input.mouse.y - vh / 2) * 0.1) / zoom,
-  };
+  let aim: number;
+  let lead: Vec2;
+  if (touch.active) {
+    // the stick gives an absolute angle (screen and world axes align); the
+    // camera pulls the way you are aiming, scaled by how hard you push
+    aim = touch.aim;
+    lead = {
+      x: Math.cos(aim) * touch.deflect * TOUCH_LEAD,
+      y: Math.sin(aim) * touch.deflect * TOUCH_LEAD,
+    };
+  } else {
+    lead = {
+      x: ((input.mouse.x - vw / 2) * 0.1) / zoom,
+      y: ((input.mouse.y - vh / 2) * 0.1) / zoom,
+    };
+    aim = 0; // needs the camera first, resolved below
+  }
   const baseCam = renderer.camera(mePos, lead, { x: 0, y: 0 });
-  const mouseWorld = {
-    x: baseCam.x + (input.mouse.x - vw / 2) / zoom,
-    y: baseCam.y + (input.mouse.y - vh / 2) / zoom,
-  };
-  const aim = Math.atan2(mouseWorld.y - mePos.y, mouseWorld.x - mePos.x);
+  if (!touch.active) {
+    const mouseWorld = {
+      x: baseCam.x + (input.mouse.x - vw / 2) / zoom,
+      y: baseCam.y + (input.mouse.y - vh / 2) / zoom,
+    };
+    aim = Math.atan2(mouseWorld.y - mePos.y, mouseWorld.x - mePos.x);
+  }
+
+  const wid = self.slots[self.slot];
+  const w = WEAPONS[wid];
 
   // --- build + send input ---
-  const keys = input.moveKeys();
-  const sprint = !!input.keys['shift'];
-  const firing = input.mouse.down && !hud.buyOpen && alive && inputAllowed;
+  // Both sources are read whenever the pads are up, so a phone with a
+  // bluetooth keyboard still works.
+  const kb = input.moveKeys();
+  const keys = touch.active
+    ? {
+      w: kb.w || touch.keys.w ? 1 : 0, a: kb.a || touch.keys.a ? 1 : 0,
+      s: kb.s || touch.keys.s ? 1 : 0, d: kb.d || touch.keys.d ? 1 : 0,
+    }
+    : kb;
+  const moving = !!(keys.w || keys.a || keys.s || keys.d);
+  // The touch SPRINT button is a toggle, so it must not leak stamina: tickSprint
+  // drains whenever the flag is set, moving or not. Gate the wire flag on
+  // movement instead of clearing the toggle — clearing it made a pre-emptive tap
+  // (arm sprint, then run) impossible, since the cancel fired the same frame.
+  const sprint = touch.active ? (touch.sprint && moving) : !!input.keys['shift'];
+  const held = (touch.active ? touch.deflect >= DEAD_ZONE : input.mouse.down)
+    && !hud.buyOpen && alive && inputAllowed;
+  // A held flag fires a semi-auto exactly once (server-side firePrev), so on
+  // touch the flag is pulsed at the weapon's fire interval instead.
+  const firing = touch.active
+    ? tickFireCadence(cadence, held, w.auto, fireIntervalMs(w) / 1000, dt)
+    : held;
   seq++;
   const msg = { t: 'input', seq, dt, keys, aim, fire: firing, sprint };
   net.send(msg);
   if (alive) state.predict({ seq, dt, keys, sprint });
 
+  // ...and it clears itself once it can no longer do anything, so the lit
+  // button never lies about what the next step will do
+  if (touch.active && touch.sprint) {
+    const stam = state.pred ? state.pred.stamina : 100;
+    if (!alive || stam <= 0) touch.setSprint(false);
+  }
+
   // --- local gun feel (muzzle/tracer/sound/kick predicted immediately) ---
-  const wid = self.slots[self.slot];
-  const w = WEAPONS[wid];
   gun.cd -= dt;
   gun.sinceShot += dt;
   if (gun.sinceShot > 0.25 && gun.spread > 0) gun.spread = Math.max(0, gun.spread - w.recover * dt);
@@ -354,9 +456,24 @@ function loop(t: number): void {
   gun.wasDown = firing;
 
   // --- edge-triggered controls ---
-  if (input.consume('r')) { net.send({ t: 'reload' }); audio.click(0.2); }
-  if (input.consume('b')) hud.toggleBuy();
+  const tapReload = touch.active && touch.consume('reload');
+  const tapSwap = touch.active && touch.consume('swap');
+  const tapArmory = touch.active && touch.consume('armory');
+  if (input.consume('r') || tapReload) { net.send({ t: 'reload' }); audio.click(0.2); }
+  if (input.consume('b') || tapArmory) hud.toggleBuy();
   if (input.consume('escape')) hud.toggleBuy(false);
+  if (tapSwap && alive && self.slots.length > 1) {
+    net.send({ t: 'slot', i: (self.slot + 1) % self.slots.length });
+  }
+
+  // Touch has no spare thumb for a reload key, so an empty mag reloads itself.
+  // Throttled, not edge-triggered: the server clears the condition by starting
+  // the reload, and a dropped packet just retries.
+  const curAmmo = self.ammo[self.slot];
+  autoReloadT -= dt;
+  if (touch.active && alive && curAmmo && curAmmo.mag === 0 && curAmmo.reserve > 0 && self.reloadT <= 0) {
+    if (autoReloadT <= 0) { net.send({ t: 'reload' }); autoReloadT = 0.5; }
+  } else if (autoReloadT < 0) autoReloadT = 0;
   if (hud.buyOpen) {
     // number keys buy while the armory is open
     ['smg', 'shotgun', 'rifle', 'sniper', 'ammo', 'health'].forEach((item, i) => {
@@ -397,8 +514,15 @@ function loop(t: number): void {
   const cam = { x: baseCam.x + sh.x, y: baseCam.y + sh.y };
   let spreadShown = w.baseSpread + gun.spread;
   if (keys.w || keys.a || keys.s || keys.d) spreadShown *= w.moveSpreadMult;
+  // no cursor on touch: park the reticle a fixed world distance along the aim ray
+  const crosshair = touch.active
+    ? {
+      x: (mePos.x + Math.cos(aim) * CROSS_DIST - cam.x) * zoom + vw / 2,
+      y: (mePos.y + Math.sin(aim) * CROSS_DIST - cam.y) * zoom + vh / 2,
+    }
+    : input.mouse;
   renderer.draw({
-    cam, crosshair: input.mouse, myId, mode, now: t,
+    cam, crosshair, myId, mode, now: t,
     me: { x: mePos.x, y: mePos.y, aim },
     players: interp.players,
     zombies: interp.zombies,
@@ -406,8 +530,9 @@ function loop(t: number): void {
   });
 
   hud.update(snap, self, myId, state.pred ? state.pred.stamina : 100);
-  hud.scoreboard(snap, myId, !!input.keys['tab']);
+  hud.scoreboard(snap, myId, !!input.keys['tab'] || scoresOpen);
   input.endFrame();
+  touch.endFrame();
 }
 
 function updateCenterMsg(snap: Snapshot, self: SelfSnap, meSnap: PlayerSnap): void {
@@ -423,12 +548,17 @@ function updateCenterMsg(snap: Snapshot, self: SelfSnap, meSnap: PlayerSnap): vo
       `<div class="sub">the squad fell on wave ${snap.wave} · ${restart}</div>`);
   } else if (!meSnap.alive) {
     if (mode === 'tdm') {
+      // the keyboard hint and the tap targets are the same four choices; CSS
+      // shows exactly one of them (.kbd-only / .cm-btns)
+      const btns = PRIMARIES.map(wn =>
+        `<button data-loadout="${wn}">${esc(WEAPONS[wn].name)}</button>`).join('');
       hud.centerMsg(`<div class="big" style="color:#e8a53f">RESPAWN IN ${Math.ceil(self.respawnT)}</div>` +
-        `<div class="sub">switch loadout: 1 SMG · 2 AR-7 · 3 M870 · 4 LR-50</div>`);
+        `<div class="sub kbd-only">switch loadout: 1 SMG · 2 AR-7 · 3 M870 · 4 LR-50</div>` +
+        `<div class="cm-btns">${btns}</div>`);
     } else {
       const fighting = snap.players.filter(p => p.alive && p.id !== myId).length;
       const spec = specName
-        ? `spectating: ${esc(specName)} — click to switch`
+        ? `spectating: ${esc(specName)} — ${touch.active ? 'tap' : 'click'} to switch`
         : 'no squadmates left standing';
       let status = 'revived when the wave clears';
       if (snap.mode === 'zombie') {

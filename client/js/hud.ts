@@ -40,6 +40,7 @@ export class Hud {
   winded = false;       // sticky until stamina recovers past the sprint threshold
   perfFps = -1;         // last-rendered perf numbers, see perf()
   perfPing = -1;
+  centerHtml: string | null = null; // last-rendered centre overlay, see centerMsg()
 
   constructor(mode: GameMode, { onAddBot, onRemoveBot, onBuy }: HudHandlers) {
     this.mode = mode;
@@ -50,14 +51,24 @@ export class Hud {
     $('menu').classList.add('hidden');
     if (mode === 'zombie') $('points').classList.remove('hidden');
 
-    // bot buttons
+    // bot buttons. On touch the list collapses behind a single toggle: at
+    // right/50% the expanded stack sits exactly under the aim thumb.
     const bar = $('botbar');
     bar.innerHTML = '';
+    bar.classList.remove('open');
+    const toggle = document.createElement('button');
+    toggle.className = 'bb-toggle';
+    toggle.textContent = 'BOTS';
+    toggle.onclick = (e) => { e.preventDefault(); bar.classList.toggle('open'); toggle.blur(); };
+    bar.appendChild(toggle);
+    const botList = document.createElement('div');
+    botList.className = 'bb-list';
+    bar.appendChild(botList);
     const btn = (label: string, fn: () => void) => {
       const b = document.createElement('button');
       b.textContent = label;
       b.onclick = (e) => { e.preventDefault(); fn(); b.blur(); };
-      bar.appendChild(b);
+      botList.appendChild(b);
     };
     if (mode === 'tdm') {
       btn('+ BOT ALLY', () => onAddBot('mine'));
@@ -190,8 +201,13 @@ export class Hud {
     this.bannerT = setTimeout(() => { b.style.opacity = '0'; }, ms);
   }
 
+  // Called every frame. Only rewrites on change — the death screen embeds
+  // tappable loadout buttons, and re-parsing the HTML 60x a second would
+  // recreate them mid-press.
   centerMsg(html: string | null): void {
     const c = $('center-msg');
+    if (html === this.centerHtml) return;
+    this.centerHtml = html;
     if (html) { c.innerHTML = html; c.classList.remove('hidden'); }
     else c.classList.add('hidden');
   }
