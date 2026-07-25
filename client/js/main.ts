@@ -10,7 +10,7 @@ import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
 import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts';
-import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
+import { newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
 import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
 import { Touch, touchDefault, type TouchMode } from './touch.ts';
 import type { GameEvent, GameMode, InputMsg, PlayerSnap, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
@@ -411,6 +411,7 @@ function loop(t: number): void {
   if (touch.active) {
     // the stick gives an absolute angle (screen and world axes align); the
     // camera pulls the way you are aiming, scaled by how hard you push
+    touch.tick(dt); // ease the angle before anything reads it
     aim = touch.aim;
     // eased, not applied raw: `aim` survives a release but `deflect` does not,
     // so the raw target steps to zero the instant the thumb lifts
@@ -455,7 +456,9 @@ function loop(t: number): void {
   // movement instead of clearing the toggle — clearing it made a pre-emptive tap
   // (arm sprint, then run) impossible, since the cancel fired the same frame.
   const sprint = touch.active ? (touch.sprint && moving) : !!input.keys['shift'];
-  const held = (touch.active ? touch.deflect >= DEAD_ZONE : input.mouse.down)
+  // touch: the stick fires only in its outer ring (touch.fire), so the inner
+  // travel is aim-only — a nudge to line up a shot is not a shot.
+  const held = (touch.active ? touch.fire : input.mouse.down)
     && !hud.buyOpen && alive && inputAllowed;
   // A held flag fires a semi-auto exactly once (server-side firePrev), so on
   // touch the flag is pulsed at the weapon's fire interval instead.

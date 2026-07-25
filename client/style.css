@@ -210,6 +210,10 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: #dde3ea; user-sele
   background: rgba(16,21,31,.34); border: 1px solid rgba(96,112,138,.34); }
 #aknob { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px;
   border-radius: 50%; background: rgba(232,72,63,.32); border: 1px solid rgba(255,130,120,.62); }
+/* Pushed into the outer ring = firing. The inner travel only aims, and that is
+   invisible under a thumb, so the ring lights up to say which state you are in. */
+#astick.hot { background: rgba(46,20,22,.42); border-color: rgba(255,120,110,.72); }
+#astick.hot #aknob { background: rgba(232,72,63,.62); border-color: rgba(255,196,190,.9); }
 
 #tbtns-left { position: absolute; display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
   left: calc(26px + env(safe-area-inset-left)); bottom: calc(174px + env(safe-area-inset-bottom)); }

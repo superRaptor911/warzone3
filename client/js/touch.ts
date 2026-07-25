@@ -10,7 +10,10 @@
 // from its interactive children, so taps fall through to the pads while the
 // armory, the bot bar and the topbar still take their own taps.
 
-import { DEAD_ZONE, STICK_R, deflection, stickKeys } from './stick.ts';
+import {
+  DEAD_ZONE, STICK_R, deflection, newAimSmooth, newFireGate, releaseAim, stickKeys,
+  tickAimSmooth, tickFireGate,
+} from './stick.ts';
 import type { MoveKeys } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -28,16 +31,29 @@ export function touchDefault(): boolean {
 export class Touch {
   active = false;
   keys: MoveKeys = {};
-  /** Absolute aim angle. Screen and world axes align, so this is the world aim. */
+  /**
+   * Absolute aim angle. Screen and world axes align, so this is the world aim.
+   * Eased toward `aimTarget` by tick() — the value the game should read.
+   */
   aim = 0;
-  /** 0..1 aim-stick deflection; past DEAD_ZONE it also means "firing". */
+  /** The raw angle the thumb is pointing at, before easing. Exposed for tuning. */
+  aimTarget = 0;
+  /** 0..1 aim-stick deflection. Past DEAD_ZONE it steers the aim. */
   deflect = 0;
+  /**
+   * Whether the stick is pushed into the outer fire ring. Latched (see
+   * tickFireGate), so it is not a plain comparison against `deflect` — read
+   * this, never re-derive it, or the hysteresis is lost.
+   */
+  fire = false;
   sprint = false;
   /** A tap landed in the play area this frame (used to cycle spectate targets). */
   tapped = false;
 
   private pressed = new Set<string>();
   private tracks = new Map<number, Track>();
+  private gate = newFireGate();
+  private smooth = newAimSmooth();
   private root = $('touch');
   private dpad = $('dpad');
   private stick = $('astick');
@@ -70,6 +86,9 @@ export class Touch {
         this.stick.style.left = `${ox}px`;
         this.stick.style.top = `${oy}px`;
         this.stick.classList.remove('hidden');
+        // a fresh plant is intent, not jitter: the first angle it produces is
+        // taken whole rather than eased into
+        releaseAim(this.smooth);
       }
       this.tracks.set(e.pointerId, { zone, ox, oy, x: e.clientX, y: e.clientY });
       this.tapped = true;
@@ -136,6 +155,15 @@ export class Touch {
     return true;
   }
 
+  /**
+   * Per-frame aim easing. Must be called from the render loop before `aim` is
+   * read — pointer events alone cannot drive it (a finger held still fires no
+   * `pointermove`, which would freeze the aim short of where it was pointed).
+   */
+  tick(dt: number): void {
+    this.aim = tickAimSmooth(this.smooth, this.aimTarget, this.deflect, dt);
+  }
+
   endFrame(): void {
     this.pressed.clear();
     this.tapped = false;
@@ -158,7 +186,7 @@ export class Touch {
       this.deflect = deflection(dx, dy);
       // hold the last angle when the thumb is inside the deadzone, exactly as a
       // mouse holds its angle when it stops moving
-      if (this.deflect >= DEAD_ZONE) this.aim = Math.atan2(dy, dx);
+      if (this.deflect >= DEAD_ZONE) this.aimTarget = Math.atan2(dy, dx);
       const k = Math.min(1, this.deflect) * STICK_R;
       const len = Math.hypot(dx, dy) || 1;
       this.knob.style.transform = `translate(${(dx / len) * k}px, ${(dy / len) * k}px)`;
@@ -166,5 +194,10 @@ export class Touch {
       this.deflect = 0;
       this.stick.classList.add('hidden');
     }
+    // The fire ring is invisible under the thumb, so the stick has to say which
+    // of its two states it is in — otherwise "why am I not shooting" is a
+    // mystery, and that is the whole risk of splitting the threshold.
+    this.fire = tickFireGate(this.gate, this.deflect);
+    this.stick.classList.toggle('hot', this.fire);
   }
 }

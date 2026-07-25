@@ -212,6 +212,18 @@ check(await page.evaluate(`!document.getElementById('astick').classList.contains
 const at = await page.evaluate<string[]>(`[document.getElementById('astick').style.left, document.getElementById('astick').style.top]`);
 check(at[0] === '640px' && at[1] === '250px', `aim stick centres on the touch point (${at.join(', ')})`);
 
+// Aim-only band: a 20px nudge is past the 13px deadzone (so it steers) but well
+// inside the 36px fire ring, and must not spend a round. This is the complaint
+// the split threshold exists for — one threshold made every nudge a shot.
+const magA = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
+await page.touch([{ x: 640, y: 250 }, { x: 660, y: 250 }]);
+await sleep(600); // several fire intervals of the 340rpm pistol
+const magB = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
+check(magB === magA, `a nudge inside the fire ring spends no ammo (mag ${magA} -> ${magB})`);
+check(!(await page.evaluate(`document.getElementById('astick').classList.contains('hot')`)),
+  'the stick does not read as firing in the aim-only band');
+await page.release();
+
 // Rounds spent, not elapsed time: a loaded SwiftShader frame rate decides how
 // fast the client can pulse the flag, and this asserts the mechanism works, not
 // that a headless browser hits 60fps.
@@ -274,6 +286,48 @@ check(await page.waitFor(`document.getElementById('dump').textContent.includes('
   'preview page boots and reports live state');
 await page.touch([{ x: 200, y: 300 }, { x: 200, y: 200 }]);
 check(await page.evaluate(`document.getElementById('dump').textContent.includes('W')`), 'preview reflects pad input');
+await page.release();
+
+// The aim-only band, read off the live dump: a 20px nudge right of the spawn
+// point is past the deadzone (the angle tracks it) but short of the fire ring.
+// Angle here, ammo in the match above — together they say "aims, does not fire".
+await page.touch([{ x: 640, y: 200 }, { x: 660, y: 200 }]);
+await sleep(200);
+const band = await page.evaluate<string>(`document.getElementById('dump').textContent`);
+// the dump always contains the word FIRING (greyed out when off, see flag()),
+// so the firing assertion below reads the <b> elements, not this text
+const aimLine = (band.match(/^aim .*$/m) || [''])[0].replace(/FIRING/, '').trim();
+check(/\b0\.0°/.test(aimLine) && /deflect 0\.38/.test(aimLine),
+  `a nudge steers the aim (${aimLine})`);
+check(!/\bFIRING\b/.test(await page.evaluate<string>(
+  `[...document.getElementById('dump').querySelectorAll('b')].map(b=>b.textContent).join(' ')`)),
+  'and the preview agrees it is not firing');
+// pushing to the rim crosses FIRE_ON
+await page.touch([{ x: 640, y: 200 }, { x: 700, y: 200 }]);
+await sleep(200);
+check(/\bFIRING\b/.test(await page.evaluate<string>(
+  `[...document.getElementById('dump').querySelectorAll('b')].map(b=>b.textContent).join(' ')`)),
+  'pushing to the rim fires');
+
+// The aim ease, end state only: asserting the transient would race the render
+// loop and go flaky, so this checks the two things that actually break —
+// (a) tick(dt) is wired up at all, and (b) the ease converges rather than
+// parking short of the target forever.
+const lagOf = async (): Promise<number> => {
+  const m = (await page.evaluate<string>(`document.getElementById('dump').textContent`))
+    .match(/lag\s+(-?[\d.]+)/);
+  return m ? Math.abs(Number(m[1])) : NaN;
+};
+await page.touch([{ x: 640, y: 200 }, { x: 700, y: 260 }]); // ~45deg, at the rim
+await sleep(500);
+const settled = await lagOf();
+check(settled < 1, `the eased aim converges on the raw angle (lag ${settled.toFixed(2)}deg)`);
+// A frozen aim is the failure mode of the per-frame design (a caller that never
+// ticks): it would show up here as lag that never closes.
+await page.touch([{ x: 640, y: 200 }, { x: 580, y: 140 }]); // swing ~180deg away
+await sleep(500);
+const settled2 = await lagOf();
+check(settled2 < 1, `and keeps converging after a large swing (lag ${settled2.toFixed(2)}deg)`);
 await page.release();
 
 // ---- desktop regression: the zoom/autoDensity work must not touch it ----

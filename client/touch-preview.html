@@ -47,7 +47,10 @@
 
 <script type="module">
 import { Touch } from '/js/touch.ts';
-import { DEAD_ZONE, STICK_R, newFireCadence, tickFireCadence } from '/js/stick.ts';
+import {
+  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, FIRE_OFF, FIRE_ON, STICK_R,
+  newFireCadence, tickFireCadence,
+} from '/js/stick.ts';
 import { zoomFor } from '/js/view.ts';
 import { WEAPONS, fireIntervalMs } from '/shared/weapons.ts';
 
@@ -72,28 +75,41 @@ function frame(t) {
   const dt = Math.min(0.05, Math.max(0.001, (t - last) / 1000));
   last = t;
 
+  // same per-frame ease the game runs; without it the aim never moves
+  touch.tick(dt);
+
   if (touch.consume('swap')) { wi = (wi + 1) % ORDER.length; shots = 0; }
   const reloaded = touch.consume('reload');
   const armory = touch.consume('armory');
   const w = WEAPONS[ORDER[wi]];
 
-  const held = touch.deflect >= DEAD_ZONE;
+  // the latched gate, same as the game reads — not a threshold compare here,
+  // or the preview would show a different trigger than the one that shoots
+  const held = touch.fire;
   if (tickFireCadence(cadence, held, w.auto, fireIntervalMs(w) / 1000, dt)) { shots++; shotsWindow++; }
   since += dt;
   if (since >= 1) { rate = shotsWindow / since; shotsWindow = 0; since = 0; }
 
   const k = touch.keys;
   const deg = (touch.aim * 180 / Math.PI).toFixed(1).padStart(7);
+  // raw target and the lag behind it: this is the number to watch when deciding
+  // whether AIM_TAU_NEAR is too heavy. Wrapped, so it reads +-180 not 0..360.
+  const rawDeg = (touch.aimTarget * 180 / Math.PI).toFixed(1).padStart(7);
+  let errDeg = (touch.aimTarget - touch.aim) * 180 / Math.PI;
+  errDeg = errDeg - 360 * Math.floor((errDeg + 180) / 360);
   dump.innerHTML =
     `keys      ${flag(k.w, 'W')} ${flag(k.a, 'A')} ${flag(k.s, 'S')} ${flag(k.d, 'D')}\n` +
     `aim       ${deg}°   deflect ${touch.deflect.toFixed(2)}   ${flag(held, 'FIRING')}\n` +
+    `raw       ${rawDeg}°   lag ${errDeg.toFixed(1).padStart(6)}°   ` +
+    `tau ${(AIM_TAU_NEAR + (AIM_TAU_FAR - AIM_TAU_NEAR) * ((Math.min(1, Math.max(DEAD_ZONE, touch.deflect)) - DEAD_ZONE) / (1 - DEAD_ZONE))).toFixed(3)}s\n` +
     `weapon    ${w.name}  (${w.auto ? 'auto' : 'semi'}, ${w.rpm} rpm = ${(w.rpm / 60).toFixed(1)}/s)\n` +
     `edges     ${String(shots).padStart(4)} total   measured ${rate.toFixed(1)}/s\n` +
     `sprint    ${flag(touch.sprint, 'ARMED')}   tapped ${flag(touch.tapped, 'YES')}\n` +
     `buttons   ${flag(reloaded, 'RELOAD')} ${flag(armory, 'ARMORY')}  (SWAP cycles the weapon)\n` +
     `viewport  ${innerWidth}x${innerHeight}  zoom ${zoomFor(innerWidth, innerHeight).toFixed(3)}  ` +
     `--s ${getComputedStyle(document.documentElement).getPropertyValue('--s').trim()}\n` +
-    `stick     radius ${STICK_R}px  deadzone ${DEAD_ZONE} (${(DEAD_ZONE * STICK_R).toFixed(0)}px)`;
+    `stick     radius ${STICK_R}px  deadzone ${DEAD_ZONE} (${(DEAD_ZONE * STICK_R).toFixed(0)}px)  ` +
+    `fire ${FIRE_ON}/${FIRE_OFF} (${(FIRE_ON * STICK_R).toFixed(0)}/${(FIRE_OFF * STICK_R).toFixed(0)}px)`;
 
   // sector wheel: the 8 buckets stickKeys quantises to, plus the live vector
   const R = 120, cx = 130, cy = 130;
@@ -114,7 +130,28 @@ function frame(t) {
   ctx.arc(cx, cy, R * DEAD_ZONE, 0, Math.PI * 2);
   ctx.strokeStyle = 'rgba(232,72,63,.7)';
   ctx.stroke();
+  // the two fire thresholds: cross the outer one to start firing, fall inside
+  // the dashed inner one to stop (the hysteresis band is the gap between them)
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * FIRE_ON, 0, Math.PI * 2);
+  ctx.strokeStyle = touch.fire ? 'rgba(255,120,110,.95)' : 'rgba(232,72,63,.5)';
+  ctx.stroke();
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * FIRE_OFF, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(232,72,63,.35)';
+  ctx.stroke();
+  ctx.setLineDash([]);
   if (touch.deflect > 0) {
+    // thin grey = where the thumb points, solid red = the eased aim the game
+    // uses; the gap between them IS the latency this filter costs
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(touch.aimTarget) * R * touch.deflect,
+      cy + Math.sin(touch.aimTarget) * R * touch.deflect);
+    ctx.strokeStyle = 'rgba(159,176,200,.55)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + Math.cos(touch.aim) * R * touch.deflect, cy + Math.sin(touch.aim) * R * touch.deflect);

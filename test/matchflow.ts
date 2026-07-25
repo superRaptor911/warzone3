@@ -10,7 +10,9 @@ import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
 import {
-  DEAD_ZONE, STICK_R, deflection, newFireCadence, newLead, stickKeys, tickFireCadence, tickLead,
+  AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, FIRE_OFF, FIRE_ON, STICK_R, deflection, newAimSmooth,
+  newFireCadence, newFireGate, newLead, releaseAim, stickKeys, tickAimSmooth, tickFireCadence,
+  tickFireGate, tickLead,
 } from '../client/js/stick.ts';
 import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
 import { CONFIRM_GRACE, cancelReload, newReloadMirror, startReload, tickReload } from '../client/js/reload.ts';
@@ -478,6 +480,155 @@ console.log('\ntouch fire cadence');
   tickFireCadence(st2, true, false, 1, dt);   // shot
   tickFireCadence(st2, false, false, 1, dt);  // release
   check(tickFireCadence(st2, true, false, 1, dt), 'a fresh press fires immediately after release');
+}
+
+// ---- touch: aim-vs-fire gate ----
+// The right thumb aims AND fires, so the two have to be separable: inner travel
+// turns you, the outer ring shoots. One shared threshold made every nudge a shot.
+console.log('\ntouch fire gate');
+{
+  // aiming without firing is the whole point of the split
+  const g = newFireGate();
+  let firedWhileAiming = false;
+  for (const d of [DEAD_ZONE, 0.3, 0.4, 0.5, 0.6, FIRE_ON - 0.01]) {
+    if (tickFireGate(g, d)) firedWhileAiming = true;
+  }
+  check(!firedWhileAiming,
+    `the stick steers up to ${FIRE_ON} of travel without firing (${(DEAD_ZONE * STICK_R).toFixed(0)}..${(FIRE_ON * STICK_R).toFixed(0)}px)`);
+  // ...and the aim itself is still live in there — that band is above DEAD_ZONE,
+  // which is what touch.ts gates the angle update on
+  check(FIRE_ON > DEAD_ZONE + 0.2, `the aim-only band is wide, not a sliver (${DEAD_ZONE}..${FIRE_ON})`);
+
+  // reaching the ring fires
+  check(tickFireGate(g, FIRE_ON), 'pushing to the outer ring fires');
+  check(tickFireGate(g, 1), 'and full deflection keeps firing');
+
+  // hysteresis: once committed, wobble below FIRE_ON must not stutter the flag.
+  // A flickering flag is worse than either state — semi-autos are pulsed at
+  // their fire interval, so it reads as the gun going off at random.
+  const h = newFireGate();
+  tickFireGate(h, 1);
+  let stutter = false;
+  for (const d of [FIRE_ON - 0.02, FIRE_ON + 0.02, FIRE_OFF + 0.01]) {
+    if (!tickFireGate(h, d)) stutter = true;
+  }
+  check(!stutter, `fire latches through wobble down to ${FIRE_OFF}`);
+  check(!tickFireGate(h, FIRE_OFF - 0.01), 'pulling back inside the release ring stops the fire');
+  // and it releases well before the thumb reaches the aim deadzone, so there is
+  // no deflection that both aims and cannot stop shooting
+  check(FIRE_OFF > DEAD_ZONE, `the release ring sits outside the deadzone (${FIRE_OFF} > ${DEAD_ZONE})`);
+
+  // lifting the thumb reports 0 — this is what stops the fire on release
+  const r = newFireGate();
+  tickFireGate(r, 1);
+  check(!tickFireGate(r, 0), 'a lifted thumb always releases');
+
+  // the band has to be a real gap, or the latch does nothing
+  check(FIRE_OFF < FIRE_ON, 'the release threshold is below the fire threshold');
+}
+
+// ---- touch: radius-scaled aim easing ----
+// A floating stick's angular sensitivity is 1/radius, so near its origin a 1-3px
+// wander of the finger's contact centroid was ~13deg of instant rotation. The
+// fix must kill that WITHOUT dulling a committed flick at the rim.
+console.log('\ntouch aim easing');
+{
+  const dt = 1 / 60, DEG = Math.PI / 180;
+  const tauAt = (s: number) =>
+    AIM_TAU_NEAR + (AIM_TAU_FAR - AIM_TAU_NEAR) * ((s - DEAD_ZONE) / (1 - DEAD_ZONE));
+  // primed state: acquired already, so we measure easing and not the snap
+  const primed = (a = 0) => {
+    const st = newAimSmooth();
+    tickAimSmooth(st, a, 1, dt);
+    return st;
+  };
+
+  // 1. the reported bug. +-1.5px of tangential centroid noise at 10Hz, converted
+  // to degrees at that radius, must come out small at BOTH ends of the travel.
+  const wobble = (s: number) => {
+    const amp = (1.5 / (s * STICK_R));         // radians of raw jitter
+    const st = primed();
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < 600; i++) {
+      const t = i * dt;
+      tickAimSmooth(st, amp * Math.sin(2 * Math.PI * 10 * t), s, dt);
+      if (t > 0.3) { lo = Math.min(lo, st.a); hi = Math.max(hi, st.a); }
+    }
+    return { raw: 2 * amp / DEG, out: (hi - lo) / DEG };
+  };
+  const near = wobble(DEAD_ZONE);
+  check(near.raw > 12 && near.out < 3,
+    `centroid noise at the deadzone is flattened (${near.raw.toFixed(1)}deg raw -> ${near.out.toFixed(2)}deg)`);
+  const rim = wobble(1);
+  check(rim.out < 3, `and it is no worse at the rim (${rim.raw.toFixed(1)}deg raw -> ${rim.out.toFixed(2)}deg)`);
+
+  // 2. the flick must survive: at the rim the ease is ~1:1, so a deliberate 90deg
+  // sweep lands in a couple of frames. This is the property that makes the cure
+  // local — dulling the rim would have traded one bad feel for another.
+  const sweep = (s: number) => {
+    const st = primed();
+    for (let i = 0; i < 600; i++) {
+      tickAimSmooth(st, 90 * DEG, s, dt);
+      if (st.a >= 81 * DEG) return (i + 1) * dt * 1000;
+    }
+    return Infinity;
+  };
+  const rimMs = sweep(1), nearMs = sweep(DEAD_ZONE);
+  check(rimMs <= 50, `a rim flick is effectively instant (90deg in ${rimMs.toFixed(0)}ms)`);
+  check(nearMs > rimMs * 3,
+    `while the same sweep near the centre is deliberately damped (${nearMs.toFixed(0)}ms)`);
+  check(tauAt(1) < tauAt(DEAD_ZONE), 'tau falls monotonically with deflection');
+
+  // 3. shortest arc across the +-PI seam. A plain lerp from 179deg to -179deg
+  // takes the 358deg route and spins the player the whole way round.
+  const seam = primed(179 * DEG);
+  tickAimSmooth(seam, -179 * DEG, 1, dt);
+  const moved = ((seam.a - 179 * DEG) / DEG + 540) % 360 - 180;
+  check(moved > 0 && moved < 3,
+    `179deg -> -179deg steps forward across the seam, not back round it (${moved.toFixed(2)}deg)`);
+  // and the output stays wrapped, so nothing downstream sees a runaway angle
+  const spin = primed();
+  for (let i = 0; i < 240; i++) tickAimSmooth(spin, ((i * 37) % 360 - 180) * DEG, 1, dt);
+  check(Math.abs(spin.a) <= Math.PI + 1e-9, `the eased angle stays in (-PI, PI] (${spin.a.toFixed(3)})`);
+
+  // 4. frame-rate independence: phones are the only callers and they range from
+  // a throttled 20fps to 120fps. Same wall clock must give the same angle.
+  const fast = primed(), slow = primed();
+  for (let i = 0; i < 10; i++) tickAimSmooth(fast, 90 * DEG, DEAD_ZONE, 0.016);
+  tickAimSmooth(slow, 90 * DEG, DEAD_ZONE, 0.16);
+  check(Math.abs(fast.a - slow.a) / DEG < 0.5,
+    `160ms of ease matches at 62fps and 6fps (${(fast.a / DEG).toFixed(2)} vs ${(slow.a / DEG).toFixed(2)})`);
+
+  // 5. a fresh plant snaps. Easing 150deg over ~230ms at the moment the player
+  // is reacting to something behind them reads as a broken stick.
+  const fresh = newAimSmooth();
+  check(tickAimSmooth(fresh, 150 * DEG, DEAD_ZONE, dt) === 150 * DEG,
+    'the first angle of a new touch is taken whole');
+
+  // ...and the snap must survive the touchdown frames, where deflection is still
+  // zero and the caller is holding the PREVIOUS touch's angle. Latching there
+  // would spend the snap on a stale target and ease into the real one.
+  const plant = newAimSmooth();
+  tickAimSmooth(plant, 0, 1, dt);            // a previous touch, aimed at 0
+  releaseAim(plant);                          // thumb lifts, new touch lands
+  for (let i = 0; i < 5; i++) tickAimSmooth(plant, 0, 0, dt); // ...held inside the deadzone
+  check(tickAimSmooth(plant, 150 * DEG, 0.38, dt) === 150 * DEG,
+    'the snap waits for the first angle past the deadzone, not the touchdown frame');
+  // ...and only the first: the very next sample eases again
+  const after = tickAimSmooth(fresh, 0, DEAD_ZONE, dt);
+  check(after > 100 * DEG, `the touch then eases as normal (${(after / DEG).toFixed(1)}deg)`);
+  releaseAim(fresh);
+  check(tickAimSmooth(fresh, 0, DEAD_ZONE, dt) === 0, 'releaseAim re-arms the snap for the next touch');
+
+  // 6. monotonic, no overshoot — an overshoot would be a wobble of its own
+  const mono = primed();
+  let prev = mono.a, ok = true;
+  for (let i = 0; i < 120; i++) {
+    tickAimSmooth(mono, 45 * DEG, 0.5, dt);
+    if (mono.a < prev || mono.a > 45 * DEG + 1e-9) ok = false;
+    prev = mono.a;
+  }
+  check(ok, 'the ease rises monotonically and never overshoots the target');
 }
 
 // ---- touch: eased camera lead ----
