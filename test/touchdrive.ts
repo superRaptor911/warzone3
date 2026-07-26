@@ -221,6 +221,92 @@ await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
 // bots row is applied at module scope from the stored preset.
 check(await page.waitFor(`!!document.querySelector('#bots-opts button.sel')`), 'client module booted');
 
+// ---- art invariants that only pixels can prove ----
+//
+// Both of these are properties of what gets DRAWN, so no amount of type checking
+// or Node-side testing reaches them; a real Canvas2D is the only instrument. They
+// live here rather than in matchflow.ts for the same reason the brightness
+// measurements do — this is the file that has a browser.
+console.log('art invariants (measured on a real canvas)');
+{
+  // 1. Every wall composite must cover its whole cell.
+  //
+  // Load-bearing, not cosmetic: scene.ts skips the floor sprite underneath a
+  // wall tile precisely because the wall is opaque. A composite with a gap would
+  // show the page background through the middle of a building, and would do it
+  // only on whichever neighbour mask was broken.
+  const walls = await page.evaluate<{ worst: number; where: string }>(`(async () => {
+    const ts = await import('/client/js/gfx/tileset.ts');
+    const img = new Image();
+    img.src = ts.SHEET_URL;
+    await img.decode();
+    const cv = new OffscreenCanvas(ts.CELL, ts.CELL);
+    const g = cv.getContext('2d');
+    let worst = 0, where = '';
+    for (const key of Object.keys(ts.WALL_ART)) {
+      for (let mask = 0; mask < ts.MASKS; mask++) {
+        g.clearRect(0, 0, ts.CELL, ts.CELL);
+        ts.drawWall(g, img, Number(key), mask);
+        const d = g.getImageData(0, 0, ts.CELL, ts.CELL).data;
+        let holes = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] < 255) holes++;
+        if (holes > worst) { worst = holes; where = 'mat ' + key + ' mask ' + mask; }
+      }
+    }
+    return { worst, where };
+  })()`);
+  check(walls.worst === 0,
+    `every wall composite fills its cell (worst: ${walls.worst}px${walls.where ? ' at ' + walls.where : ''})`);
+
+  // 2. No body silhouette may reach past its collision radius.
+  //
+  // The sprite outline IS the hitbox and the rings mark it, so a body that
+  // overhangs promises reach the server will not honour. CLAUDE.md notes nothing
+  // type-checks this and asks for a re-measure after touching art.ts — which the
+  // keyline pass did, since it inflates every primitive. Measured for the idle
+  // frame and all four walk frames, because the binding cases are the soldier's
+  // trailing boot at full stride and the walker's reaching claw.
+  const bodies = await page.evaluate<Record<string, number>>(`(async () => {
+    const art = await import('/client/js/gfx/art.ts');
+    const C = await import('/shared/constants.ts');
+    const radii = { player: C.PLAYER_RADIUS, walker: C.ZOMBIE_RADII.walker,
+                    runner: C.ZOMBIE_RADII.runner, brute: C.ZOMBIE_RADII.brute };
+    const out = {};
+    for (const kind of art.BODY_KINDS) {
+      const R = radii[kind] * art.BODY_SS;
+      const size = Math.ceil(2 * R) + 2;
+      const cv = new OffscreenCanvas(size, size);
+      const g = cv.getContext('2d');
+      let peak = 0;
+      const frames = ['idle'];
+      for (let f = 0; f < art.WALK_FRAMES; f++) frames.push(f);
+      for (const f of frames) {
+        g.clearRect(0, 0, size, size);
+        g.save();
+        g.translate(size / 2, size / 2);
+        art.drawBody(g, kind, R, f === 'idle' ? null : f / art.WALK_FRAMES);
+        g.restore();
+        const d = g.getImageData(0, 0, size, size).data;
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            if (d[(y * size + x) * 4 + 3] <= 8) continue;
+            // pixel centre relative to the sprite centre
+            const dx = x + 0.5 - size / 2, dy = y + 0.5 - size / 2;
+            const r = Math.hypot(dx, dy);
+            if (r > peak) peak = r;
+          }
+        }
+      }
+      out[kind] = peak / R;
+    }
+    return out;
+  })()`);
+  for (const [kind, ratio] of Object.entries(bodies)) {
+    check(ratio <= 1,
+      `${kind} silhouette stays inside its collision radius (peak ${ratio.toFixed(3)} of R)`);
+  }
+}
+
 check(await page.evaluate(`document.body.classList.contains('touch')`),
   'the emulated phone gets the pads with nobody having to ask for them');
 check(await page.evaluate(`getComputedStyle(document.getElementById('touch')).display === 'none'`),

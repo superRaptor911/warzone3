@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
 import { buildMap, T_FLOOR } from '../shared/maps.ts';
-import { TILE } from '../shared/constants.ts';
+import { TILE, ZOMBIE_RADII } from '../shared/constants.ts';
 import type { GameEvent, Snapshot, TdmSnapshot, WelcomeMsg, ZombieSnapshot } from '../shared/types.ts';
 
 let failures = 0;
@@ -38,6 +38,68 @@ for (const name of ['compound', 'outbreak']) {
     stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
   }
   check(seen.size === floors.length, `fully connected (${seen.size}/${floors.length})`);
+
+  // ---- clearance for the widest body in the game ----
+  //
+  // CLAUDE.md flags this as an unchecked hazard: "the flood fill is tile-based
+  // and won't catch it", about a brute (radius 22) in 48px doorways.
+  //
+  // Worth being precise about what can actually go wrong, because it is NOT the
+  // fill. On a tile grid the nearest solid surface to a tile centre is an
+  // axis-aligned face TILE/2 away, so ANY body with radius < TILE/2 fits at
+  // every floor tile and sweeps between any two 4-adjacent ones — the geometry
+  // makes it impossible to trap. A clearance fill therefore cannot fail while
+  // that inequality holds, and a check that cannot fail is not a check.
+  //
+  // What can fail is the inequality. Brute sits 2px inside it, so a single bump
+  // to 24 jams it in every doorway on both maps, which is exactly the mistake
+  // CLAUDE.md warns about. So the fill below is reported for its numbers, and
+  // the assertion that guards the hazard is the margin.
+  const R = Math.max(...Object.values(ZOMBIE_RADII));
+  for (const [kind, r] of Object.entries(ZOMBIE_RADII)) {
+    check(r < TILE / 2,
+      `${kind} radius ${r} clears a 1-tile doorway (< ${TILE / 2}, margin ${TILE / 2 - r}px)`);
+  }
+  const fitsAt = (tx: number, ty: number): boolean => {
+    const cx = tx * TILE + TILE / 2, cy = ty * TILE + TILE / 2;
+    // Sample the tiles the body's bounding box can touch. A tile grid means the
+    // nearest solid surface is always an axis-aligned face or a corner, so
+    // clamping the centre to each candidate tile's box is an exact distance.
+    for (let gy = Math.floor((cy - R) / TILE); gy <= Math.floor((cy + R) / TILE); gy++) {
+      for (let gx = Math.floor((cx - R) / TILE); gx <= Math.floor((cx + R) / TILE); gx++) {
+        if (!g.solid(gx, gy)) continue;
+        const nx = Math.max(gx * TILE, Math.min((gx + 1) * TILE, cx));
+        const ny = Math.max(gy * TILE, Math.min((gy + 1) * TILE, cy));
+        if ((cx - nx) ** 2 + (cy - ny) ** 2 < R * R) return false;
+      }
+    }
+    return true;
+  };
+  const wide = floors.filter(([x, y]) => fitsAt(x, y));
+  check(wide.length === floors.length,
+    `a radius-${R} body fits on every floor tile (${wide.length}/${floors.length})`);
+
+  // Every tile a brute can stand on must be reachable from every other, or a
+  // wave can spawn one where it can never reach the squad.
+  const wideSet = new Set(wide.map(([x, y]) => x + ',' + y));
+  const wseen = new Set<string>();
+  const wstack: [number, number][] = [wide[0]];
+  while (wstack.length) {
+    const [x, y] = wstack.pop()!;
+    const k = x + ',' + y;
+    if (wseen.has(k) || !wideSet.has(k)) continue;
+    wseen.add(k);
+    wstack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+  }
+  check(wseen.size === wide.length,
+    `every tile a radius-${R} body fits on is reachable by one (${wseen.size}/${wide.length})`);
+
+  // And it has to be able to leave its spawn and reach the objective, which is
+  // the specific failure a doorway one pixel too narrow produces.
+  for (const s of name === 'outbreak' ? g.zombieSpawns : g.redSpawns) {
+    const k = Math.floor(s.x / TILE) + ',' + Math.floor(s.y / TILE);
+    check(wseen.has(k), `radius-${R} body can path out of spawn ${s.x},${s.y}`);
+  }
 }
 
 // ---- 2. live server ----

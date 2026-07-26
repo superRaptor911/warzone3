@@ -12,7 +12,10 @@ import {
   TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
   TICK_RATE, PLAYER_SPEED, PLAYER_HP, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
 } from '../shared/constants.ts';
-import { Grid, T_FLOOR } from '../shared/maps.ts';
+import { Grid, MAT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId } from '../shared/maps.ts';
+import {
+  DECOR_ART, floorKey, floorVariant, floorVariants, isFloorMat, isPropMat, isWallMat,
+} from '../client/js/gfx/tileset.ts';
 import { createPickup } from '../server/entities.ts';
 import {
   addStats, claimProfile, closeDb, leaderboard, nameError, nameKey, nameTaken,
@@ -1071,6 +1074,97 @@ console.log('profiles: leaderboard');
   check(!board.tdm.some(r => r.name === 'Topper'), 'the two modes are separate boards');
 }
 closeDb();
+
+// ---- world materials: the render-only layer, and its separation from the sim ----
+//
+// tileset.ts is importable here for the same reason view.ts and stick.ts are:
+// its tables and pure helpers touch no DOM at module scope. The draw functions
+// need a canvas, so the checks that require pixels live in touchdrive.ts.
+console.log('materials: every authored value has art');
+{
+  for (const name of ['compound', 'outbreak']) {
+    const g = buildMap(name);
+    check(g.mat.length === g.tiles.length, `${name}: mat is parallel to tiles`);
+
+    // Every material a builder actually emits must resolve, and must resolve to
+    // art of the RIGHT KIND — a wall labelled with a floor material would draw a
+    // hole in a building rather than throw.
+    const bad: string[] = [];
+    let voids = 0;
+    for (let ty = 0; ty < g.h; ty++) {
+      for (let tx = 0; tx < g.w; tx++) {
+        const t = g.get(tx, ty), id = matId(g.matAt(tx, ty));
+        if (id === MAT.VOID) { voids++; continue; }
+        const ok = t === T_WALL ? isWallMat(id)
+          : t === T_CRATE ? isPropMat(id)
+          : isFloorMat(id);
+        if (!ok) bad.push(`${tx},${ty} tile=${t} mat=${id}`);
+      }
+    }
+    check(voids === 0, `${name}: no tile was left unpainted`);
+    check(bad.length === 0, `${name}: every material matches its tile kind`
+      + (bad.length ? ` — ${bad.slice(0, 4).join('; ')}` : ''));
+
+    // Every floor variant the position hash can select must have been baked, or
+    // the tile silently renders nothing (tx.has() misses) instead of throwing.
+    const missing = new Set<string>();
+    for (let ty = 0; ty < g.h; ty++) {
+      for (let tx = 0; tx < g.w; tx++) {
+        const id = g.get(tx, ty) === T_FLOOR
+          ? matId(g.matAt(tx, ty)) : matId(g.floorMatUnder(tx, ty));
+        if (!isFloorMat(id)) continue;
+        const v = floorVariant(id, tx, ty);
+        if (v >= floorVariants(id)) missing.add(floorKey(id, v));
+      }
+    }
+    check(missing.size === 0, `${name}: every selected floor variant exists`);
+
+    // Decor is dressing, so the rule is that it can never matter: inside the
+    // map, never on a solid tile, and always a frame that exists.
+    const offMap = g.decor.filter(d => d.x < 0 || d.y < 0 || d.x > g.pxW() || d.y > g.pxH());
+    const onSolid = g.decor.filter(d => g.solidAtPx(d.x, d.y));
+    const noArt = g.decor.filter(d => !(d.f in DECOR_ART));
+    check(g.decor.length > 20, `${name}: has decor (${g.decor.length} items)`);
+    check(offMap.length === 0, `${name}: no decor outside the map`);
+    check(onSolid.length === 0, `${name}: no decor stranded inside a solid tile`);
+    check(noArt.length === 0, `${name}: every decor frame has art`);
+
+    // Both halves have to survive the wire, and `mat` is the easy one to forget:
+    // welcome sends it as a plain array and Uint8Array.set would silently
+    // truncate a short one.
+    const round = Grid.deserialize(g.serialize());
+    check(round.mat.every((v, i) => v === g.mat[i]), `${name}: mat round-trips`);
+    check(round.tiles.every((v, i) => v === g.tiles[i]), `${name}: tiles round-trip`);
+    check(round.decor.length === g.decor.length
+      && round.decor.every((d, i) => d.x === g.decor[i].x && d.f === g.decor[i].f),
+      `${name}: decor round-trips`);
+  }
+
+  // The load-bearing separation: materials are render data, so painting them
+  // must not have moved a single hitbox. Rebuild the geometry and compare.
+  const fresh = buildMap('compound');
+  const blank = new Grid(fresh.w, fresh.h);
+  blank.tiles.set(fresh.tiles);
+  check(blank.solid(16, 11) && !blank.solid(19, 11),
+    'painting materials left the office wall and its doorway as they were');
+  check([...fresh.mat].some(v => v !== 0) && fresh.tiles.length === blank.tiles.length,
+    'mat is populated without changing the tile array length');
+}
+
+// Deterministic authoring: two builds of the same map must be byte-identical, or
+// two clients in one room would disagree about the world and the tests above
+// would only be true of whichever build happened to run.
+console.log('materials: map building is deterministic');
+{
+  for (const name of ['compound', 'outbreak']) {
+    const a = buildMap(name), b = buildMap(name);
+    check(a.mat.every((v, i) => v === b.mat[i]), `${name}: materials are stable across builds`);
+    check(a.decor.length === b.decor.length
+      && a.decor.every((d, i) => d.x === b.decor[i].x && d.y === b.decor[i].y
+        && d.f === b.decor[i].f && d.rot === b.decor[i].rot),
+      `${name}: scattered decor is stable across builds`);
+  }
+}
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);
 process.exit(failures === 0 ? 0 : 1);

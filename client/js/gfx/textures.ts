@@ -1,13 +1,18 @@
 import { Assets, Rectangle, Sprite, Texture } from 'pixi.js';
 import type { Spritesheet } from 'pixi.js';
-import { PICKUP_RADIUS, PLAYER_RADIUS, TEAM, TILE, ZOMBIE_RADII } from '../../../shared/constants.ts';
-import { T_CRATE, T_FLOOR, T_WALL, type Grid } from '../../../shared/maps.ts';
+import { PICKUP_RADIUS, PLAYER_RADIUS, TEAM, ZOMBIE_RADII } from '../../../shared/constants.ts';
+import { MAT, T_CRATE, T_WALL, matId, matIndoor, type Grid } from '../../../shared/maps.ts';
 import { WEAPONS, type WeaponId } from '../../../shared/weapons.ts';
 import type { PickupKind, ZombieTypeId } from '../../../shared/types.ts';
 import {
   BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, PICKUP_SS, WALK_FRAMES,
   bodyKey, drawBody, drawPickup, drawGun, gunKey, pickupKey, type BodyKind,
 } from './art.ts';
+import {
+  CELL, DECOR_ART, FLOOR_ART, MASKS, PROP_ART, SHEET_URL, WALL_ART,
+  decorKey, drawDecor, drawFloor, drawProp, drawShade, drawWall,
+  floorKey, floorVariants, propKey, shadeKey, wallKey,
+} from './tileset.ts';
 
 export { gunKey, pickupKey };
 
@@ -46,78 +51,68 @@ export const CHEVRON_S = 18;     // 'chevron' baked at this nominal size
 
 export function ringKey(r: number, w: number): string { return `ring:${r}x${w}`; }
 
-function hash2(x: number, y: number): number {
-  let h = (x * 374761393 + y * 668265263) | 0;
-  h = (h ^ (h >> 13)) * 1274126177;
-  return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+/**
+ * The tilesheet, fetched once per page. Everything the world is drawn from
+ * comes out of this one image, so a missing or corrupt file is a hard failure
+ * rather than a degraded look — see the note on `MissingArtError`.
+ */
+let sheetLoad: Promise<HTMLImageElement> | null = null;
+function loadSheet(): Promise<HTMLImageElement> {
+  sheetLoad ??= new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new MissingArtError(SHEET_URL));
+    img.src = SHEET_URL;
+  });
+  return sheetLoad;
 }
 
-// The full tile map, baked once with Canvas2D (identical output to the old
-// renderer) and uploaded as a single static texture.
-function buildMapCanvas(g: Grid): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = g.pxW(); c.height = g.pxH();
-  if (c.width > 4096 || c.height > 4096) throw new Error('map exceeds 4096px texture limit — split needed');
-  const x = c.getContext('2d')!;
-  for (let ty = 0; ty < g.h; ty++) {
-    for (let tx = 0; tx < g.w; tx++) {
-      const v = g.get(tx, ty), px = tx * TILE, py = ty * TILE;
-      if (v === T_FLOOR) {
-        const n = hash2(tx, ty);
-        const b = 24 + n * 6;
-        x.fillStyle = `rgb(${b},${b + 3},${b + 8})`;
-        x.fillRect(px, py, TILE, TILE);
-        x.strokeStyle = 'rgba(255,255,255,0.025)';
-        x.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
-        if (n > 0.93) { // floor detail: cracks/stains
-          x.fillStyle = 'rgba(0,0,0,0.18)';
-          x.beginPath();
-          x.ellipse(px + TILE * n, py + TILE * (1 - n), 8, 5, n * 6, 0, 7);
-          x.fill();
-        }
-      } else if (v === T_WALL) {
-        x.fillStyle = '#3a4450';
-        x.fillRect(px, py, TILE, TILE);
-        x.fillStyle = '#465364';
-        x.fillRect(px, py, TILE, 6);
-        x.fillStyle = 'rgba(0,0,0,0.35)';
-        if (!g.solid(tx, ty + 1)) x.fillRect(px, py + TILE - 5, TILE, 5);
-        x.strokeStyle = '#242c36';
-        x.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
-      } else if (v === T_CRATE) {
-        const n = hash2(tx, ty);
-        x.fillStyle = `rgb(${28},${31},${37})`;
-        x.fillRect(px, py, TILE, TILE);
-        x.fillStyle = n > 0.5 ? '#6e5232' : '#75593a';
-        x.fillRect(px + 4, py + 4, TILE - 8, TILE - 8);
-        x.strokeStyle = '#3f2e1b';
-        x.lineWidth = 2;
-        x.strokeRect(px + 5, py + 5, TILE - 10, TILE - 10);
-        x.beginPath();
-        x.moveTo(px + 5, py + 5); x.lineTo(px + TILE - 5, py + TILE - 5);
-        x.moveTo(px + TILE - 5, py + 5); x.lineTo(px + 5, py + TILE - 5);
-        x.stroke();
-        x.lineWidth = 1;
-      }
-    }
+/**
+ * Thrown when the world tilesheet cannot be loaded.
+ *
+ * The optional entity atlas (`tryLoadArtAtlas`) degrades silently on purpose —
+ * it is an override, and its absence is the normal case. The tilesheet is the
+ * opposite: it ships in the repository, so it can only be absent because a
+ * checkout or a deploy is broken, and a world quietly rendered as flat nothing
+ * would send someone hunting through the renderer for an hour. main.ts turns
+ * this into a visible message.
+ */
+export class MissingArtError extends Error {
+  constructor(url: string) {
+    super(`world art failed to load: ${url} — the file ships in client/assets/, `
+      + 'so this is a broken checkout or deploy, not a missing download');
+    this.name = 'MissingArtError';
   }
-  return c;
 }
+
+// Minimap colours, per material family. The minimap is a schematic, not a
+// thumbnail: it needs "wall / prop / indoor floor / outdoor floor" to be
+// separable at 4px per tile, which is well below the size any texture survives.
+const MINI_INDOOR = '#2c3a3c';
+const MINI_OUTDOOR = 'rgba(10,13,18,0.78)';
+const MINI_WALL: Record<number, string> = {
+  [MAT.WALL_BRICK]: '#a8582c',
+  [MAT.WALL_WOOD]: '#8e6238',
+  [MAT.WALL_CONCRETE]: '#7d949a',
+};
 
 function buildMiniCanvas(g: Grid): HTMLCanvasElement {
   const scale = 4;
   const c = document.createElement('canvas');
   c.width = g.w * scale; c.height = g.h * scale;
   const x = c.getContext('2d')!;
-  x.fillStyle = 'rgba(10,13,18,0.78)';
+  x.fillStyle = MINI_OUTDOOR;
   x.fillRect(0, 0, c.width, c.height);
   for (let ty = 0; ty < g.h; ty++) {
     for (let tx = 0; tx < g.w; tx++) {
-      const v = g.get(tx, ty);
-      if (v !== T_FLOOR) {
-        x.fillStyle = v === T_WALL ? '#57647a' : '#6e5232';
-        x.fillRect(tx * scale, ty * scale, scale, scale);
-      }
+      const v = g.get(tx, ty), m = g.matAt(tx, ty);
+      let fill = '';
+      if (v === T_WALL) fill = MINI_WALL[matId(m)] || '#57647a';
+      else if (v === T_CRATE) fill = '#6e5232';
+      else if (matIndoor(m)) fill = MINI_INDOOR;
+      if (!fill) continue;
+      x.fillStyle = fill;
+      x.fillRect(tx * scale, ty * scale, scale, scale);
     }
   }
   return c;
@@ -155,6 +150,19 @@ interface Atlas { base: Texture; entries: Map<string, AtlasEntry> }
  */
 let sharedAtlas: Atlas | null = null;
 
+/**
+ * The world-tile atlas: every floor variant, wall composite, AO shade, prop and
+ * decor frame, baked at CELL px into one texture source so the whole ground
+ * plane draws in a single batch however many sprites it is made of.
+ *
+ * Page-lifetime for the same reason as `sharedAtlas` — and additionally because
+ * it depends only on the tilesheet and the material tables, never on the grid,
+ * so a per-match rebake would be pure waste. **Never destroy it**: read the
+ * note above sharedAtlas for what freeing a live TextureSource does to the
+ * particle pipe's bind group.
+ */
+let sharedTiles: Atlas | null = null;
+
 // All small shapes are baked into one 1024x1024 canvas atlas so every sprite
 // shares a single texture source (full batching) — 1024 because the body walk
 // frame sets (4 kinds x 5 frames, supersampled) overflow 512; 46 cells fill
@@ -163,7 +171,6 @@ let sharedAtlas: Atlas | null = null;
 // runtime — this is also the spritesheet contract for real art (see
 // tryLoadArtAtlas).
 export class GfxTextures {
-  map!: Texture;
   mini!: Texture;
   private entries = new Map<string, AtlasEntry>();
 
@@ -173,6 +180,9 @@ export class GfxTextures {
     return e;
   }
 
+  /** True if a key exists, for callers that can pick a fallback. */
+  has(key: string): boolean { return this.entries.has(key); }
+
   sprite(key: string): Sprite {
     const e = this.entry(key);
     const s = new Sprite(e.tex);
@@ -180,11 +190,20 @@ export class GfxTextures {
     return s;
   }
 
-  bake(grid: Grid): void {
-    this.map = Texture.from(buildMapCanvas(grid));
+  /**
+   * Async because the world art has to arrive before it can be baked. Only the
+   * minimap is per-match now: the shape atlas and the tile atlas both depend
+   * solely on constants, so they are built once per page.
+   *
+   * Throws MissingArtError if the tilesheet is unreachable. Deliberate — see
+   * the note on that class.
+   */
+  async bake(grid: Grid): Promise<void> {
+    const sheet = await loadSheet();
     this.mini = Texture.from(buildMiniCanvas(grid));
     sharedAtlas ??= bakeAtlas();
-    this.entries = sharedAtlas.entries;
+    sharedTiles ??= bakeTiles(sheet);
+    this.entries = new Map([...sharedAtlas.entries, ...sharedTiles.entries]);
   }
 
   // Real-art hook: if /assets/atlas.json (a Pixi spritesheet whose frame names
@@ -211,12 +230,89 @@ export class GfxTextures {
     } catch { /* no art shipped — procedural bake stands */ }
   }
 
-  // Only the map bakes are ours to free; the atlas is page-lifetime on purpose
-  // (see sharedAtlas) and outlives every Renderer.
+  // Only the minimap bake is ours to free; both atlases are page-lifetime on
+  // purpose (see sharedAtlas / sharedTiles) and outlive every Renderer.
   destroy(): void {
-    this.map.destroy(true);
     this.mini.destroy(true);
   }
+}
+
+/**
+ * Bakes every world-tile frame from the tilesheet into one atlas at CELL px.
+ *
+ * Tiles get their own atlas rather than joining the shape atlas because they
+ * have a different lifetime story (they need an async fetch first) and because
+ * separating them keeps the ground plane and the entities in one batch each
+ * anyway — they are drawn from different layers, so nothing is gained by
+ * sharing a source.
+ *
+ * Frames are baked with `imageSmoothingEnabled` on: the source is 128px and the
+ * target is 96px, so every blit is a downscale and smoothing is what makes it
+ * clean rather than aliased.
+ */
+function bakeTiles(sheet: HTMLImageElement): Atlas {
+  // Counted, not guessed: floors (sum of variants) + walls (3 x 16) + shades
+  // (16) + props + decor. ~110 cells of 96px need ~21 per row at 2048 wide.
+  const c = document.createElement('canvas');
+  c.width = 2048; c.height = 1024;
+  const x = c.getContext('2d')!;
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = 'high';
+  const PAD = 2;
+  let cx = PAD, cy = PAD;
+  const pending: { key: string; rect: Rectangle; ax: number; ay: number }[] = [];
+  const cell = (key: string, ax: number, ay: number,
+                draw: (g: CanvasRenderingContext2D) => void): void => {
+    if (cx + CELL + PAD > c.width) { cx = PAD; cy += CELL + PAD; }
+    if (cy + CELL + PAD > c.height) throw new Error('tile atlas overflow');
+    x.save();
+    x.translate(cx, cy);
+    draw(x);
+    x.restore();
+    pending.push({ key, rect: new Rectangle(cx, cy, CELL, CELL), ax, ay });
+    cx += CELL + PAD;
+  };
+
+  // Floors: anchored top-left, since a tile sprite is positioned at its corner.
+  // Variant count comes from floorVariants, not the cell list — a material can
+  // have more baked faces than source cells (see FLOOR_FX grain).
+  for (const key of Object.keys(FLOOR_ART)) {
+    const id = Number(key);
+    for (let v = 0; v < floorVariants(id); v++) {
+      cell(floorKey(id, v), 0, 0, g => drawFloor(g, sheet, id, v));
+    }
+  }
+  // Wall composites: one per material per neighbour mask.
+  for (const key of Object.keys(WALL_ART)) {
+    const id = Number(key);
+    for (let mask = 0; mask < MASKS; mask++) {
+      cell(wallKey(id, mask), 0, 0, g => drawWall(g, sheet, id, mask));
+    }
+  }
+  // Floor-side ambient occlusion, one per mask — shared by every material.
+  for (let mask = 0; mask < MASKS; mask++) {
+    cell(shadeKey(mask), 0, 0, g => drawShade(g, mask));
+  }
+  // Props sit on the floor sprite, so they keep their transparency.
+  for (const key of Object.keys(PROP_ART)) {
+    const id = Number(key);
+    cell(propKey(id), 0, 0, g => drawProp(g, sheet, id));
+  }
+  // Decor is placed by centre and rotated, so it anchors in the middle.
+  for (const key of Object.keys(DECOR_ART)) {
+    const f = Number(key);
+    cell(decorKey(f), 0.5, 0.5, g => drawDecor(g, sheet, f));
+  }
+
+  const base = Texture.from(c);
+  const entries = new Map<string, AtlasEntry>();
+  for (const p of pending) {
+    entries.set(p.key, {
+      tex: new Texture({ source: base.source, frame: p.rect }),
+      ax: p.ax, ay: p.ay,
+    });
+  }
+  return { base, entries };
 }
 
 function bakeAtlas(): Atlas {

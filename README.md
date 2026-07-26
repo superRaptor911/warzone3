@@ -1,8 +1,12 @@
 # WARZONE·3
 
 Multiplayer top-down 2D shooter for the browser. Authoritative Node.js server,
-zero-dependency canvas client, two game modes, and bots you can add to either side.
-Written in TypeScript with no build step.
+canvas client, two game modes, and bots you can add to either side. Written in
+TypeScript with no build step.
+
+The server has exactly one npm dependency (`ws`); the client bundles nothing and
+ships one art asset, a CC0 tilesheet (see `client/assets/LICENSE-ART.md`).
+Entities, weapon sprites and all sound remain procedurally generated.
 
 ## Run
 

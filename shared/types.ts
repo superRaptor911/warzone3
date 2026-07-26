@@ -37,10 +37,26 @@ export interface InputMsg {
 
 export interface Ammo { mag: number; reserve: number }
 
+/**
+ * One piece of free-position scenery: a stain, a skid mark, a scatter of
+ * rubble. Purely decorative — the rule in shared/maps.ts is that anything
+ * which collides or occludes is tile-aligned and lives in `tiles`/`mat`, so a
+ * DecorSpec can never affect the simulation. Positions are world px, `rot` is
+ * radians, `s` scales the baked frame, `f` indexes the decor art table
+ * (DECOR in client/js/gfx/tileset.ts).
+ */
+export interface DecorSpec { x: number; y: number; rot: number; s: number; f: number }
+
 export interface SerializedGrid {
   w: number;
   h: number;
   tiles: number[];
+  /**
+   * Render-only material per tile, parallel to `tiles`. Never consulted by
+   * collision, raycasts, LOS or pathfinding — see the note on Grid.mat.
+   */
+  mat: number[];
+  decor: DecorSpec[];
   redSpawns: Vec2[];
   blueSpawns: Vec2[];
   survivorSpawns: Vec2[];

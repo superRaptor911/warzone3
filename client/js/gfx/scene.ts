@@ -1,9 +1,13 @@
 import { Container, Sprite, Text } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters';
-import { PLAYER_RADIUS, TEAM } from '../../../shared/constants.ts';
+import { PLAYER_RADIUS, TEAM, TILE } from '../../../shared/constants.ts';
+import { T_FLOOR, T_WALL, matId, type Grid } from '../../../shared/maps.ts';
 import type { PickupSnap, PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
 import { DISC_R, GfxTextures, PICKUP_COLORS, TEAM_COLORS, ZTYPE, gunKey, pickupKey, ringKey } from './textures.ts';
 import { BODY_SS, GUN_SS, HEAD, PICKUP_SS, WALK_FRAMES, bodyKey, type BodyKind } from './art.ts';
+import {
+  TILE_SS, decorKey, floorKey, floorVariant, neighbourMask, propKey, shadeKey, wallKey,
+} from './tileset.ts';
 
 // Stage layer tree. Order is load-bearing (encodes the old painter's order):
 // world (lit, phase 2 darkens it) < light slot < worldFx (emissive/floats,
@@ -53,6 +57,96 @@ export function buildLayers(stage: Container, bloom: boolean): Layers {
     world, ground, under, actors, fxTop, lightSlot, worldFx, pickups, emissive, floats,
     screenUi, minimap,
   };
+}
+
+/**
+ * Builds the world as real sprites instead of one pre-baked map texture.
+ *
+ * Every frame comes from the single tile-atlas source, so Pixi batches the lot:
+ * ~2200 quads for Outbreak is one draw call's worth of work, and in exchange the
+ * ground is resolution-independent (no 48px-per-tile ceiling to upscale at a
+ * DPR-2 backing store), free of the old 4096px map-texture limit, and able to
+ * vary per tile.
+ *
+ * Draw order inside `ground`, and each part's reason for being where it is:
+ *   floor   every tile, including under walls — walls are opaque, and painting
+ *           the floor everywhere means a prop never needs an under-tile baked in
+ *   shade   ambient occlusion on floor tiles beside solids: the half of a wall's
+ *           drop shadow that lands on the ground, which cannot live in the wall
+ *           texture because a texture is clipped to its own cell
+ *   decor   free-position dressing, above the ground and below anything solid
+ *   solid   wall composites and props
+ *
+ * Nothing here is pooled or updated: the world is static for the life of a
+ * match, so these are built once and never touched again. Decals add their
+ * RenderTexture to the same layer afterwards, above all of it.
+ */
+function buildTilemap(ground: Container, tx: GfxTextures, grid: Grid): void {
+  const scale = 1 / TILE_SS;             // atlas cells are baked at TILE * TILE_SS
+  const solid = (x: number, y: number): boolean => grid.solid(x, y);
+  const floors = new Container();
+  const shades = new Container();
+  const decors = new Container();
+  const solids = new Container();
+
+  for (let ty = 0; ty < grid.h; ty++) {
+    for (let tx0 = 0; tx0 < grid.w; tx0++) {
+      const t = grid.get(tx0, ty);
+      const m = grid.matAt(tx0, ty);
+      const id = matId(m);
+      const px = tx0 * TILE, py = ty * TILE;
+
+      // Floor under everything except walls. A wall composite covers its whole
+      // cell (asserted by the invariant test), so a floor sprite beneath one is
+      // ~10% of the tilemap's sprites drawing nothing anyone can see. Props DO
+      // get one: none of their art fills the cell.
+      if (t !== T_WALL) {
+        const fid = t === T_FLOOR ? id : matId(grid.floorMatUnder(tx0, ty));
+        const fkey = floorKey(fid, floorVariant(fid, tx0, ty));
+        if (tx.has(fkey)) {
+          const s = tx.sprite(fkey);
+          s.position.set(px, py);
+          s.scale.set(scale);
+          floors.addChild(s);
+        }
+      }
+
+      if (t === T_FLOOR) {
+        const mask = neighbourMask(solid, tx0, ty);
+        if (mask) {
+          const s = tx.sprite(shadeKey(mask));
+          s.position.set(px, py);
+          s.scale.set(scale);
+          shades.addChild(s);
+        }
+        continue;
+      }
+
+      // Solid: a wall composite picked by which faces front onto floor, or a
+      // prop drawn over the floor sprite above.
+      const key = t === T_WALL
+        ? wallKey(id, neighbourMask(solid, tx0, ty))
+        : propKey(id);
+      if (tx.has(key)) {
+        const s = tx.sprite(key);
+        s.position.set(px, py);
+        s.scale.set(scale);
+        solids.addChild(s);
+      }
+    }
+  }
+
+  for (const d of grid.decor) {
+    const key = decorKey(d.f);
+    if (!tx.has(key)) continue;
+    const s = tx.sprite(key);
+    s.position.set(d.x, d.y);
+    s.rotation = d.rot;
+    s.scale.set(scale * d.s);
+    decors.addChild(s);
+  }
+
+  ground.addChild(floors, shades, decors, solids);
 }
 
 function makeBar(tx: GfxTextures, w: number, y: number): { bg: Sprite; fg: Sprite } {
@@ -268,11 +362,10 @@ export class Scene {
   private seen = new Set<number>();
   private textScale = 1;
 
-  constructor(stage: Container, tx: GfxTextures, bloom: boolean) {
+  constructor(stage: Container, tx: GfxTextures, bloom: boolean, grid: Grid) {
     this.tx = tx;
     this.layers = buildLayers(stage, bloom);
-    const mapSprite = new Sprite(tx.map);
-    this.layers.ground.addChild(mapSprite);
+    buildTilemap(this.layers.ground, tx, grid);
   }
 
   setTextScale(s: number): void {

@@ -5,7 +5,7 @@ import { WEAPONS, PRIMARIES, fireIntervalMs, type WeaponId } from '../../shared/
 import { Net } from './net.ts';
 import { Input } from './input.ts';
 import { GameState } from './state.ts';
-import { Renderer } from './render.ts';
+import { MissingArtError, Renderer } from './render.ts';
 import { Fx } from './fx.ts';
 import { Audio } from './audio.ts';
 import { Hud, weaponIconHtml } from './hud.ts';
@@ -390,6 +390,19 @@ net.onWelcome = (m) => {
     lastFrame = performance.now();
     perfSince = lastFrame; perfFrames = 0;
     requestAnimationFrame(loop);
+  }).catch((err: unknown) => {
+    if (boot !== bootSeq) return;
+    // The world art is required, so a failure here is fatal to the match rather
+    // than cosmetic — bail to the menu and SAY SO. Rendering a blank world and
+    // carrying on would look like a renderer bug and cost someone an afternoon;
+    // the shipped tilesheet can only be missing if the deploy is broken.
+    console.error('renderer boot failed', err);
+    // The reason goes THROUGH quit(): `onclose` fires a task later and reports
+    // the quit reason itself, so anything written to #conn-status here would be
+    // overwritten by the silent '' a moment afterwards.
+    net.quit(err instanceof MissingArtError
+      ? 'World art failed to load — check client/assets/ in the deploy'
+      : 'Renderer failed to start (see console)');
   });
 };
 

@@ -95,16 +95,38 @@ function gv(v: number): string {
   const n = Math.round(255 * Math.max(0, Math.min(1, v)));
   return `rgb(${n},${n},${n})`;
 }
+
+/**
+ * Body keyline state. When `keyW > 0` every primitive below is drawn inflated by
+ * that much in one flat dark value instead of its own ramp value, which is the
+ * same two-pass trick drawGun uses: outline pass, then colour pass.
+ *
+ * The bodies need it now because the world does. The floor used to be
+ * rgb(24..30) — near black — so a bright-biased ramp was all the contrast a
+ * silhouette needed. The tilesheet's floors are mid-tone (asphalt is 74, poured
+ * concrete 156, shop tile 245), and against those a tinted ramp with no rim
+ * reads as a soft disc rather than a soldier. A dark keyline is also the
+ * tileset's own visual language, which is what makes procedural bodies sit in it.
+ *
+ * KEY_V is deliberately below the 0.40 ramp floor that the rest of art.ts holds
+ * to. That rule is about the body's MASSES turning to mud under Outbreak's
+ * multiply lightmap; a one-pixel rim is the exception that makes the masses
+ * legible in the first place.
+ */
+let keyW = 0;
+const KEY_V = 0.14;
+
 function ell(g: Ctx, x: number, y: number, rx: number, ry: number, rot: number, v: number): void {
-  g.fillStyle = gv(v);
-  g.beginPath(); g.ellipse(x, y, rx, ry, rot, 0, TAU); g.fill();
+  g.fillStyle = keyW ? gv(KEY_V) : gv(v);
+  g.beginPath(); g.ellipse(x, y, rx + keyW, ry + keyW, rot, 0, TAU); g.fill();
 }
 function dot(g: Ctx, x: number, y: number, r: number, v: number): void {
-  g.fillStyle = gv(v);
-  g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  g.fillStyle = keyW ? gv(KEY_V) : gv(v);
+  g.beginPath(); g.arc(x, y, r + keyW, 0, TAU); g.fill();
 }
 function limb(g: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, v: number): void {
-  g.strokeStyle = gv(v); g.lineWidth = w; g.lineCap = 'round';
+  g.strokeStyle = keyW ? gv(KEY_V) : gv(v);
+  g.lineWidth = w + keyW * 2; g.lineCap = 'round';
   g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
 }
 
@@ -227,11 +249,37 @@ function drawBrute(g: Ctx, R: number, ph: number | null): void {
   dot(g, 0.26 * R, sway * 0.5, 0.24 * R, 0.88);
 }
 
+/** Keyline width as a fraction of R. ~1.5px at the baked radius of a player. */
+const BODY_OL = 0.045;
+
+/**
+ * Draws a body, keyline pass first.
+ *
+ * THE RADIUS INVARIANT IS PRESERVED BY CONSTRUCTION, and this is the whole
+ * reason the shapes are drawn at `R - ol` rather than at `R`. The keyline
+ * inflates every primitive by `ol`, so the furthest-out pixel moves from
+ * `p * R` to `p * (R - ol) + ol`, which is `p*R + ol*(1 - p)` — strictly less
+ * than R for any silhouette that already fit. The four kinds peak at 0.90-0.96
+ * of R, so the rim costs at most 0.4% of the radius and the sprite outline is
+ * still inside the ring that marks the hitbox.
+ *
+ * Nothing type-checks that, exactly as the note in CLAUDE.md warns. Re-measure
+ * if you change a body's proportions: the binding cases are the soldier's
+ * trailing boot at full stride and the walker's reaching claw.
+ */
 export function drawBody(g: Ctx, kind: BodyKind, R: number, ph: number | null): void {
-  if (kind === 'player') drawSoldier(g, R, ph);
-  else if (kind === 'walker') drawWalker(g, R, ph);
-  else if (kind === 'runner') drawRunner(g, R, ph);
-  else drawBrute(g, R, ph);
+  const ol = R * BODY_OL;
+  const Rs = R - ol;
+  const paint = (): void => {
+    if (kind === 'player') drawSoldier(g, Rs, ph);
+    else if (kind === 'walker') drawWalker(g, Rs, ph);
+    else if (kind === 'runner') drawRunner(g, Rs, ph);
+    else drawBrute(g, Rs, ph);
+  };
+  keyW = ol;
+  paint();
+  keyW = 0;
+  paint();
 }
 
 // ---- weapons ----
@@ -249,9 +297,16 @@ export interface GunPal {
   outline: string;    // dark keyline, drawn inflated behind everything
 }
 
-// Deliberately MID-TONE, not near-black: these sit on a floor of roughly
-// rgb(24..30) under a multiply lightmap, so a dark gun disappears. Each weapon
-// gets a signature hue so it is identifiable in the world and in the HUD.
+// Deliberately MID-TONE, and each weapon gets a signature hue so it is
+// identifiable in the world and in the HUD.
+//
+// The original reason for mid-tone was that the procedural floor was rgb(24..30)
+// and a dark gun vanished into it. The tilesheet floors are brighter — asphalt
+// 74, poured concrete 156, shop tile 245 — so that hazard is gone and the range
+// these sit in reads against all of them; verified in-match on asphalt and on
+// concrete. The values are unchanged because they still work, not by neglect:
+// what carries them on the pale floors is the near-black `outline` keyline, so
+// that is the entry to leave alone.
 const GUN_PAL: Record<WeaponId, GunPal> = {
   // bright gunmetal sidearm, pale steel sights
   pistol: { frame: '#5a6675', barrel: '#3c444e', furniture: '#2e343c', accent: '#b9c6d4', glass: '#ff6a5e', shadow: '#1b1f24', edge: '#8f9dad', outline: '#0d1014' },

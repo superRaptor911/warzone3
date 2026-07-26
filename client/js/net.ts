@@ -21,11 +21,19 @@ export class Net {
    * exactly the state a failed dial leaves behind.
    */
   quitting = false;
+  /**
+   * What a deliberate quit should report. Empty for a player leaving on purpose
+   * (nothing to say); set when we are the ones aborting and the player needs to
+   * know why — a caller cannot just write the message itself after calling
+   * quit(), because `onclose` fires a task later and would overwrite it.
+   */
+  private quitReason = '';
 
   connect(joinMsg: object): void {
     this.ping = -1;
     this.nextPingAt = 0;
     this.quitting = false;
+    this.quitReason = '';
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${proto}//${location.host}`);
     this.ws.onopen = () => {
@@ -60,7 +68,8 @@ export class Net {
     this.ws.onclose = () => {
       const was = this.connected;
       this.connected = false;
-      if (this.quitting) this.onClose?.('');   // we left on purpose; say nothing
+      // '' when the player left on purpose; a reason when WE aborted the match.
+      if (this.quitting) this.onClose?.(this.quitReason);
       else if (was) this.onClose?.('Disconnected from server');
       else this.onClose?.('Could not connect');
     };
@@ -88,6 +97,11 @@ export class Net {
   /**
    * Leave on purpose. The server's own `close` handler frees the slot and emits
    * the `leave` event, so there is nothing to send first.
+   *
+   * `reason` is for the case where the client is aborting rather than the player
+   * leaving — it reaches onClose instead of the silent ''. Pass it here rather
+   * than writing the menu text after calling quit(): `onclose` runs a task later
+   * and would overwrite anything written in the meantime.
    */
-  quit(): void { this.quitting = true; this.ws?.close(); }
+  quit(reason = ''): void { this.quitting = true; this.quitReason = reason; this.ws?.close(); }
 }

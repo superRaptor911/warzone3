@@ -85,7 +85,9 @@ export class Renderer {
     const a = await ensureApp(canvas, opts.resolution);
     if (live) live.dispose();
     const tx = new GfxTextures();
-    tx.bake(grid);
+    // Throws MissingArtError if the world tilesheet is unreachable — the world
+    // art is required, not an optional override. main.ts surfaces it.
+    await tx.bake(grid);
     await tx.tryLoadArtAtlas(); // optional real-art spritesheet overrides bakes
     live = new Renderer(a, canvas, grid, tx, opts);
     return live;
@@ -98,7 +100,7 @@ export class Renderer {
     this.canvas = canvas;
     this.grid = grid;
     this.tx = tx;
-    this.scene = new Scene(a.stage, this.tx, opts.bloom);
+    this.scene = new Scene(a.stage, this.tx, opts.bloom, grid);
     // screen-sized filterArea: avoids per-frame bounds recompute on a sparse layer
     this.scene.layers.emissive.filterArea = this.emissiveArea;
     this.decals = new Decals(a, this.tx, this.scene.layers, grid);
