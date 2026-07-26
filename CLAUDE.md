@@ -167,6 +167,15 @@ failing a build) and never `client/`.
   right up to the claim — the claim is permanent and there is no rename.
   `#cp-clear` is now a **non-destructive** per-run "start from wave 1" toggle
   (`fresh` on the join), not a delete.
+- **`#code-btn` is never hidden**, and that is the whole of the new-device story:
+  the restore field lives inside that panel, so gating the button on already
+  having a profile put the recovery flow behind the exact condition it exists to
+  fix. With no profile the button and panel title read RESTORE PROFILE and
+  `#code-own` (our own code + COPY) is hidden — there is nothing to show yet —
+  while `#code-none` explains what the field is for; the pair flips the moment a
+  restore lands, because `renderProfile` runs again. Enter in `#code-in` submits,
+  and the field is focused on open only off touch (a landscape phone would get a
+  keyboard over the panel).
 - **The leaderboard ranks lifetime kills, bots included**, two boards, zero-kill
   rows excluded. Known and accepted: a TDM room left running against bots ranks,
   and `best_wave` is inflatable by matchmaking into a deep room. `resume_wave`

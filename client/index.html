@@ -39,7 +39,9 @@
       </div>
       <div id="prof-links">
         <button id="board-btn">LEADERBOARD</button>
-        <button id="code-btn" class="hidden">RECOVERY CODE</button>
+        <!-- Never hidden: pasting a code is the only way onto a new device, and
+             a device that has no profile yet is precisely where that is needed. -->
+        <button id="code-btn">RECOVERY CODE</button>
       </div>
     </div>
 
@@ -106,14 +108,20 @@
   <!-- The code IS the credential: it is the profile token verbatim, so anyone
        holding it owns the progress and the callsign. -->
   <div id="code" class="menu-panel cut hidden">
-    <h3><span>RECOVERY CODE</span><button class="mp-close" data-close="code" aria-label="close">&times;</button></h3>
+    <h3><span id="code-title">RECOVERY CODE</span><button class="mp-close" data-close="code" aria-label="close">&times;</button></h3>
     <div id="code-body">
-      <p class="help">this code is your account. paste it on another device to carry
-        your callsign and progress across. anyone who has it owns them.</p>
-      <div class="code-mine">
-        <code id="code-val"></code>
-        <button id="code-copy">COPY</button>
+      <!-- Only the half that shows *your* code needs a profile behind it; the
+           restore half below is what a fresh device comes here for. -->
+      <div id="code-own">
+        <p class="help">this code is your account. paste it on another device to carry
+          your callsign and progress across. anyone who has it owns them.</p>
+        <div class="code-mine">
+          <code id="code-val"></code>
+          <button id="code-copy">COPY</button>
+        </div>
       </div>
+      <p class="help" id="code-none">already played on another device? paste its recovery
+        code to carry that callsign and progress over.</p>
       <label class="field">
         <span class="fl">restore from a code</span>
         <input id="code-in" maxlength="32" placeholder="32 characters" autocomplete="off"

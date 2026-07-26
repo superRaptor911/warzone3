@@ -143,6 +143,8 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
 .bcol li.bempty { color: var(--ink-faint); font-size: 11px; }
 
 .code-mine { display: flex; align-items: center; gap: 8px; margin: 12px 0 16px; }
+/* Stands in for .code-mine's bottom margin when there is no code of our own. */
+#code-none { margin-bottom: 16px; }
 #code-val { flex: 1; font-family: var(--ff-num); font-size: 11px; letter-spacing: 1px; color: #9fb87a;
   background: #0b0d0f; border: 1px solid #23272c; padding: 9px 10px; word-break: break-all;
   user-select: all; -webkit-user-select: all; }

@@ -222,7 +222,13 @@ function renderProfile(): void {
   $('name-lock').classList.toggle('hidden', !p);
   if (p) $('name-lock').textContent = p.name;
   $('prof-row').classList.toggle('hidden', !p);
-  $('code-btn').classList.toggle('hidden', !p);
+  // The button stays up with no profile — restoring one is the whole point of a
+  // new device — but then the panel offers the restore field alone; there is no
+  // code of our own to show yet.
+  $('code-btn').textContent = p ? 'RECOVERY CODE' : 'RESTORE PROFILE';
+  $('code-title').textContent = p ? 'RECOVERY CODE' : 'RESTORE PROFILE';
+  $('code-own').classList.toggle('hidden', !p);
+  $('code-none').classList.toggle('hidden', !!p);
   if (p) {
     $('pr-wave').textContent = p.bestWave > 0 ? String(p.bestWave) : '—';
     $('pr-zkd').textContent = kd(p.zKills, p.zDeaths);
@@ -300,7 +306,13 @@ $('board-btn').onclick = async () => {
     <div class="bcol"><h4>OUTBREAK</h4><ol>${list(b.zombie)}</ol></div>
     <div class="bcol"><h4>SKIRMISH</h4><ol>${list(b.tdm)}</ol></div>`;
 };
-$('code-btn').onclick = () => { $('code-msg').textContent = ''; togglePanel('code', true); };
+$('code-btn').onclick = () => {
+  $('code-msg').textContent = '';
+  togglePanel('code', true);
+  // With no profile the field is the only thing in the panel, so put the caret
+  // in it. Never on touch: focusing raises the keyboard over a landscape panel.
+  if (!profile && !COMPACT_UI) ($('code-in') as HTMLInputElement).focus();
+};
 $('code-copy').onclick = async () => {
   try {
     await navigator.clipboard.writeText(profileId);
@@ -320,6 +332,9 @@ $('code-load').onclick = async () => {
   profile = p;
   renderProfile();
   msg.textContent = `restored — ${p.name}`;
+};
+($('code-in') as HTMLInputElement).onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('code-load').click(); }
 };
 
 void refreshProfile();
