@@ -20,9 +20,14 @@ const $ = (id: string) => document.getElementById(id) as HTMLElement;
 type Zone = 'move' | 'aim';
 interface Track { zone: Zone; ox: number; oy: number; x: number; y: number }
 
-/** Menu setting: follow the device, or force the controls on/off. */
-export type TouchMode = 'auto' | 'on' | 'off';
-
+/**
+ * Whether this device gets the on-screen controls. The device decides and there
+ * is no override: an AUTO/ON/OFF menu row existed and was removed, because the
+ * two forced settings only ever mattered on hardware that lies about itself,
+ * and the cost of the row was asking every player to answer a question about
+ * their own pointer before they could play. A keyboard is still read whenever
+ * the pads are up, so a tablet with one paired needs no OFF.
+ */
 export function touchDefault(): boolean {
   return matchMedia('(pointer: coarse)').matches && navigator.maxTouchPoints > 0;
 }

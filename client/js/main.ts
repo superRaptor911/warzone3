@@ -13,7 +13,7 @@ import { bloomFor, resolutionFor, uiScaleFor, type QualityTier } from './view.ts
 import { DEAD_ZONE, newFireCadence, newLead, tickFireCadence, tickLead } from './stick.ts';
 import { newAssist, onTarget, releaseAssist, tickAimAssist } from './assist.ts';
 import { cancelReload, newReloadMirror, startReload, tickReload } from './reload.ts';
-import { Touch, touchDefault, type TouchMode } from './touch.ts';
+import { Touch, touchDefault } from './touch.ts';
 import type { GameEvent, GameMode, InputMsg, PlayerSnap, ProfileDTO, SelfSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -83,31 +83,16 @@ const CROSS_DIST = 200;
 // ---------- menu ----------
 const nameInput = $('name-input') as HTMLInputElement;
 nameInput.value = localStorage.getItem('wz3-name') || '';
-// touch controls: follow the device by default, overridable from the menu
-const storedT = localStorage.getItem('wz3-touch');
-let touchMode: TouchMode = storedT === 'on' || storedT === 'off' ? storedT : 'auto';
-function applyTouchMode(): void {
-  touch.setActive(touchMode === 'on' || (touchMode === 'auto' && touchDefault()));
-  // The ease only runs on the touch branch, so the lead goes stale whenever the
-  // pads are inactive and would apply as a step on the first frame back.
-  camLead.x = 0; camLead.y = 0;
-  $('help-kb').classList.toggle('hidden', touch.active);
-  $('help-touch').classList.toggle('hidden', !touch.active);
-  // these hints name a key that touch players do not have
-  $('reloadhint').textContent = touch.active ? 'RELOAD' : 'R — RELOAD';
-  $('shophint').textContent = touch.active ? 'ARMORY' : 'B — ARMORY';
-}
-for (const b of document.querySelectorAll<HTMLButtonElement>('#touch-opts button')) {
-  b.classList.toggle('sel', b.dataset.t === touchMode);
-  b.onclick = () => {
-    touchMode = b.dataset.t as TouchMode;
-    localStorage.setItem('wz3-touch', touchMode);
-    document.querySelectorAll('#touch-opts button').forEach(x => x.classList.remove('sel'));
-    b.classList.add('sel');
-    applyTouchMode();
-  };
-}
-applyTouchMode();
+// Touch controls: the device decides, with no menu override (see touchDefault).
+// Settled once at boot rather than in a function, because nothing can change it
+// afterwards — which is also why the camera lead needs no reset here; it starts
+// at zero and only the touch branch ever eases it.
+touch.setActive(touchDefault());
+$('help-kb').classList.toggle('hidden', touch.active);
+$('help-touch').classList.toggle('hidden', !touch.active);
+// these hints name a key that touch players do not have
+$('reloadhint').textContent = touch.active ? 'RELOAD' : 'R — RELOAD';
+$('shophint').textContent = touch.active ? 'ARMORY' : 'B — ARMORY';
 
 // Bot roster, chosen before deploying because only the player who *creates* a
 // room sets its roster — a later joiner inherits whatever is already there

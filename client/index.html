@@ -72,14 +72,10 @@
             <button data-q="fast">FAST</button>
           </div>
         </div>
-        <div class="set-row" id="touch-row">
-          <span class="loadout-label">touch</span>
-          <div id="touch-opts">
-            <button data-t="auto">AUTO</button>
-            <button data-t="on">ON</button>
-            <button data-t="off">OFF</button>
-          </div>
-        </div>
+        <!-- No touch row either: the device decides whether the pads come up
+             (touchDefault), and asking a player to classify their own pointer
+             before they can deploy was a worse deal than being wrong on the
+             rare machine that misreports one. -->
         <!-- Bots are chosen here rather than in-game because only the player
              who *creates* a room sets its roster; a later joiner inherits it.
              One generic row, resolved per mode on the mode-card tap. -->

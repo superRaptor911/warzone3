@@ -194,7 +194,7 @@ function done(): never {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-// ---- phone: 844x390 landscape, touch controls forced on ----
+// ---- phone: 844x390 landscape ----
 console.log('touch client (844x390)');
 // Runs on EVERY navigation, so the profile token has to survive it: callsigns
 // are claimed permanently, and a reload that arrives as a brand-new device
@@ -205,10 +205,14 @@ await page.send('Page.addScriptToEvaluateOnNewDocument', {
     const id = localStorage.getItem('wz3-id');
     localStorage.clear();
     if (id) localStorage.setItem('wz3-id', id);
-    localStorage.setItem('wz3-touch','on');
     localStorage.setItem('wz3-name','TOUCH');
   }catch(e){}`,
 });
+// The pads come up because the emulated device asks for them, and there is no
+// longer any way to ask on its behalf — the AUTO/ON/OFF menu row is gone, so
+// nothing here can force the touch branch. Measured: mobile metrics plus touch
+// emulation report `(pointer: coarse)` with maxTouchPoints 5, which is exactly
+// what touchDefault() tests, and the desktop pass below reports neither.
 await page.viewport(844, 390, true);
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
@@ -217,7 +221,8 @@ await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
 // bots row is applied at module scope from the stored preset.
 check(await page.waitFor(`!!document.querySelector('#bots-opts button.sel')`), 'client module booted');
 
-check(await page.evaluate(`document.body.classList.contains('touch')`), 'touch mode applies from the menu setting');
+check(await page.evaluate(`document.body.classList.contains('touch')`),
+  'the emulated phone gets the pads with nobody having to ask for them');
 check(await page.evaluate(`getComputedStyle(document.getElementById('touch')).display === 'none'`),
   'pads stay hidden behind the menu');
 
@@ -481,15 +486,13 @@ console.log('\ndesktop client (1920x1080)');
 // Registered after the touch one and therefore runs after it: dropping the token
 // here is what makes this pass its own player, claiming its own callsign.
 await page.send('Page.addScriptToEvaluateOnNewDocument', {
-  // Dropping wz3-touch matters as much as the token: the script above forces it
-  // on for every document, and this pass exists to prove the fine-pointer path.
-  // Removed rather than set 'off', so the default ('auto') is what gets tested.
   source: `try{
     localStorage.removeItem('wz3-id');
-    localStorage.removeItem('wz3-touch');
     localStorage.setItem('wz3-name','DESKTOP');
   }catch(e){}`,
 });
+// Turning touch emulation back off is now the whole of what makes this the
+// fine-pointer pass — there is no stored override left to clear.
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
 await page.viewport(1920, 1080, false);
 await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });

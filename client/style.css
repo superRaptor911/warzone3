@@ -188,12 +188,12 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
 .set-row { display: flex; align-items: center; gap: 12px; }
 .loadout-label { flex: 0 0 62px; font-size: 10px; letter-spacing: 3px; color: var(--ink-faint);
   text-transform: uppercase; }
-#gfx-opts, #touch-opts, #bots-opts { display: flex; gap: 4px; flex-wrap: wrap; }
-#gfx-opts button, #touch-opts button, #bots-opts button { padding: 7px 11px; min-height: 32px;
+#gfx-opts, #bots-opts { display: flex; gap: 4px; flex-wrap: wrap; }
+#gfx-opts button, #bots-opts button { padding: 7px 11px; min-height: 32px;
   display: inline-flex; align-items: center; background: #0e1113; color: var(--ink-dim);
   border: 1px solid #2b3036; cursor: pointer; font-size: 11px; letter-spacing: 1px; font-family: var(--ff); }
-#gfx-opts button:hover, #touch-opts button:hover, #bots-opts button:hover { color: var(--ink); border-color: #454c54; }
-#gfx-opts button.sel, #touch-opts button.sel, #bots-opts button.sel { color: #fff;
+#gfx-opts button:hover, #bots-opts button:hover { color: var(--ink); border-color: #454c54; }
+#gfx-opts button.sel, #bots-opts button.sel { color: #fff;
   border-color: var(--blood-lit); background: #241416; }
 
 .mc-foot { margin-top: 18px; border-top: 1px solid #23272c; padding-top: 12px; }
@@ -222,8 +222,8 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
      better but costs ~76px over three rows, which is exactly what pushed the
      card past a 844px-tall phone into scrolling. */
   .settings { gap: 10px; margin-top: 4px; }
-  #gfx-opts, #touch-opts, #bots-opts { flex: 1; }
-  #gfx-opts button, #touch-opts button, #bots-opts button { flex: 1; min-height: 44px;
+  #gfx-opts, #bots-opts { flex: 1; }
+  #gfx-opts button, #bots-opts button { flex: 1; min-height: 44px;
     justify-content: center; font-size: 12px; }
   .mc-foot { margin-top: auto; padding-top: 16px; }
 }
@@ -250,7 +250,7 @@ body { font-family: var(--ff); color: var(--ink); user-select: none; }
   .mode-card .mode-desc { font-size: 10px; line-height: 1.4; }
   .mode-card .mc-go { margin-top: 6px; }
   .settings { gap: 5px; }
-  #gfx-opts button, #touch-opts button, #bots-opts button { padding: 5px 8px; min-height: 28px; font-size: 10px; }
+  #gfx-opts button, #bots-opts button { padding: 5px 8px; min-height: 28px; font-size: 10px; }
   .help { font-size: 10px; }
   #conn-status { margin-top: 4px; }
 }
