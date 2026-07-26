@@ -56,6 +56,11 @@ export interface SerializedGrid {
    * collision, raycasts, LOS or pathfinding — see the note on Grid.mat.
    */
   mat: number[];
+  /**
+   * Overhead props per tile, parallel to `tiles`. Render-only like `mat`, and
+   * tolerated as absent by Grid.deserialize for the same reason.
+   */
+  over: number[];
   decor: DecorSpec[];
   redSpawns: Vec2[];
   blueSpawns: Vec2[];

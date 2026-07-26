@@ -258,6 +258,54 @@ console.log('art invariants (measured on a real canvas)');
   check(walls.worst === 0,
     `every wall composite fills its cell (worst: ${walls.worst}px${walls.where ? ' at ' + walls.where : ''})`);
 
+  // 1b. Every solid prop must nearly fill its cell too — the same honesty rule,
+  // relaxed by the amount a piece of furniture legitimately is.
+  //
+  // A prop makes its whole 48px tile impassable, so what matters is the extent of
+  // its art, not how much of that extent is painted (a sofa is a U and a round
+  // table is a circle; both are honest, a bare chair is not). So the bound is on
+  // the alpha bounding box, and 0.79 is where the measurements put it: the green
+  // sofa's middle piece spans 0.797 of its cell, the armchair 0.812, and the plain
+  // crate — phase 1's art — only 0.844, so the bar cannot go higher than that
+  // without rejecting the box this whole vocabulary grew out of. What the bound
+  // stops is a future author reaching for one of the pack's bare chairs or stools
+  // (all under half a cell) and shipping a hitbox with nothing visible in it.
+  //
+  // Worth knowing where the slack sits on the worst case: the sofa's missing band
+  // is its north face, and every piece with a facing is authored against a north
+  // wall, so the 7 world px it does not cover are between the sofa and a wall
+  // tile that is solid anyway.
+  const props = await page.evaluate<{ worst: number; where: string }>(`(async () => {
+    const ts = await import('/client/js/gfx/tileset.ts');
+    const img = new Image();
+    img.src = ts.SHEET_URL;
+    await img.decode();
+    const cv = new OffscreenCanvas(ts.CELL, ts.CELL);
+    const g = cv.getContext('2d');
+    let worst = 1, where = '';
+    for (const key of Object.keys(ts.PROP_ART)) {
+      g.clearRect(0, 0, ts.CELL, ts.CELL);
+      ts.drawProp(g, img, Number(key));
+      const d = g.getImageData(0, 0, ts.CELL, ts.CELL).data;
+      let x0 = ts.CELL, y0 = ts.CELL, x1 = -1, y1 = -1;
+      for (let y = 0; y < ts.CELL; y++) {
+        for (let x = 0; x < ts.CELL; x++) {
+          if (d[(y * ts.CELL + x) * 4 + 3] <= 24) continue;
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+      const frac = Math.min((x1 - x0 + 1) / ts.CELL, (y1 - y0 + 1) / ts.CELL);
+      if (frac < worst) { worst = frac; where = 'mat ' + key; }
+    }
+    return { worst, where };
+  })()`);
+  check(props.worst >= 0.79,
+    `every prop's art spans its solid tile (worst: ${props.worst.toFixed(3)} of the cell`
+    + `${props.where ? ' at ' + props.where : ''})`);
+
   // 2. No body silhouette may reach past its collision radius.
   //
   // The sprite outline IS the hitbox and the rings mark it, so a body that

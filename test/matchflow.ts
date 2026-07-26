@@ -12,9 +12,12 @@ import {
   TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
   TICK_RATE, PLAYER_SPEED, PLAYER_HP, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
 } from '../shared/constants.ts';
-import { Grid, MAT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId } from '../shared/maps.ts';
 import {
-  DECOR_ART, floorKey, floorVariant, floorVariants, isFloorMat, isPropMat, isWallMat,
+  Grid, MAT, OVER, OVER_HEIGHT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId,
+} from '../shared/maps.ts';
+import {
+  DECOR_ART, E, N, OVER_ART, S, W, floorKey, floorVariant, floorVariants, isFloorMat,
+  isOverId, isPropMat, isWallMat, overVariant, overVariants,
 } from '../client/js/gfx/tileset.ts';
 import { createPickup } from '../server/entities.ts';
 import {
@@ -1134,6 +1137,7 @@ console.log('materials: every authored value has art');
     // truncate a short one.
     const round = Grid.deserialize(g.serialize());
     check(round.mat.every((v, i) => v === g.mat[i]), `${name}: mat round-trips`);
+    check(round.over.every((v, i) => v === g.over[i]), `${name}: over round-trips`);
     check(round.tiles.every((v, i) => v === g.tiles[i]), `${name}: tiles round-trip`);
     check(round.decor.length === g.decor.length
       && round.decor.every((d, i) => d.x === g.decor[i].x && d.f === g.decor[i].f),
@@ -1145,8 +1149,8 @@ console.log('materials: every authored value has art');
   const fresh = buildMap('compound');
   const blank = new Grid(fresh.w, fresh.h);
   blank.tiles.set(fresh.tiles);
-  check(blank.solid(16, 11) && !blank.solid(19, 11),
-    'painting materials left the office wall and its doorway as they were');
+  check(blank.solid(17, 12) && !blank.solid(19, 12),
+    'painting materials left the guard post wall and its doorway as they were');
   check([...fresh.mat].some(v => v !== 0) && fresh.tiles.length === blank.tiles.length,
     'mat is populated without changing the tile array length');
 }
@@ -1159,11 +1163,126 @@ console.log('materials: map building is deterministic');
   for (const name of ['compound', 'outbreak']) {
     const a = buildMap(name), b = buildMap(name);
     check(a.mat.every((v, i) => v === b.mat[i]), `${name}: materials are stable across builds`);
+    check(a.over.every((v, i) => v === b.over[i]), `${name}: overheads are stable across builds`);
     check(a.decor.length === b.decor.length
       && a.decor.every((d, i) => d.x === b.decor[i].x && d.y === b.decor[i].y
         && d.f === b.decor[i].f && d.rot === b.decor[i].rot),
       `${name}: scattered decor is stable across builds`);
   }
+}
+
+// ---- Compound's fairness, as an actual measurement ----
+//
+// The map is authored through `rotated`, so its halves are each other's 180°
+// rotation and neither team has geometry the other lacks. That is the whole
+// reason the helper exists, and it is one stray direct `g.set` away from being
+// quietly untrue — which is exactly the kind of unfairness nobody notices from
+// inside a match.
+console.log('compound: 180 degree rotational symmetry');
+{
+  const g = buildMap('compound');
+  check(g.w % 2 === 0 && g.h % 2 === 0,
+    `both dimensions even (${g.w}x${g.h}), so no tile is its own twin`);
+  let tiles = 0, mats = 0, overs = 0;
+  for (let y = 0; y < g.h; y++) {
+    for (let x = 0; x < g.w; x++) {
+      const i = g.idx(x, y), j = g.idx(g.w - 1 - x, g.h - 1 - y);
+      if (g.tiles[i] !== g.tiles[j]) tiles++;
+      if (g.mat[i] !== g.mat[j]) mats++;
+      if (g.over[i] !== g.over[j]) overs++;
+    }
+  }
+  check(tiles === 0, `every wall, crate and floor tile has its twin (${tiles} mismatches)`);
+  check(mats === 0, `so does every material (${mats} mismatches) — the phase-3 ambient`
+    + ' split reads MAT_INDOOR, so an asymmetric floor is asymmetric lighting');
+  check(overs === 0, `and every overhead (${overs} mismatches)`);
+
+  // Spawns: each team's set must be the other's rotation, not merely the same
+  // count. A spawn that is 3 tiles further from the middle is a real advantage.
+  const key = (p: { x: number; y: number }): string => `${p.x},${p.y}`;
+  const blue = new Set(g.blueSpawns.map(key));
+  const rotated = g.redSpawns.map(p => ({ x: g.pxW() - p.x, y: g.pxH() - p.y }));
+  check(g.redSpawns.length === g.blueSpawns.length && rotated.every(p => blue.has(key(p))),
+    `spawns are rotations of each other (${g.redSpawns.length} per team)`);
+
+  // Decor too — it never matters to play, but a stray asymmetric scatter is the
+  // tell that some authoring pass skipped the helper.
+  const dset = new Map<string, number>();
+  for (const d of g.decor) {
+    const k = `${Math.round(d.x)},${Math.round(d.y)},${d.f}`;
+    dset.set(k, (dset.get(k) ?? 0) + 1);
+  }
+  let lonely = 0;
+  for (const d of g.decor) {
+    const k = `${Math.round(g.pxW() - d.x)},${Math.round(g.pxH() - d.y)},${d.f}`;
+    if (!dset.get(k)) lonely++;
+  }
+  check(lonely === 0, `every decor item has a rotated twin (${lonely} without)`);
+}
+
+// ---- overheads: authored in phase 2, drawn in phase 3 ----
+//
+// Nothing renders these yet, which is precisely why they need asserting now: a
+// mistake made here surfaces a phase later as "the awning has no south edge" or
+// "the pipe run turns a corner and draws a straight piece", long after the map
+// was authored.
+console.log('overheads: art, autotiling and the 3% budget');
+{
+  for (const name of ['compound', 'outbreak']) {
+    const g = buildMap(name);
+    const bad: string[] = [];
+    const thin: string[] = [];
+    const bent: string[] = [];
+    let floors = 0, overFloor = 0, tiles = 0;
+    for (let ty = 0; ty < g.h; ty++) {
+      for (let tx = 0; tx < g.w; tx++) {
+        if (g.get(tx, ty) === T_FLOOR) floors++;
+        const id = g.overAt(tx, ty);
+        if (!id) continue;
+        tiles++;
+        if (g.get(tx, ty) === T_FLOOR) overFloor++;
+        if (!isOverId(id) || !OVER_HEIGHT[id]) { bad.push(`${tx},${ty} over=${id}`); continue; }
+        const same = (x: number, y: number): boolean => g.overAt(x, y) === id;
+        const mask = (same(tx, ty - 1) ? N : 0) | (same(tx + 1, ty) ? E : 0)
+          | (same(tx, ty + 1) ? S : 0) | (same(tx - 1, ty) ? W : 0);
+        const art = OVER_ART[id];
+        if (art.kind === 'slab') {
+          // The 9-slice has no piece with a north AND a south edge, so a slab one
+          // tile thin would draw with a side missing.
+          if (!(mask & (N | S)) || !(mask & (E | W))) thin.push(`${tx},${ty}`);
+        } else {
+          // No elbow art exists, and a lone tile has no orientation at all.
+          if ((mask & (N | S)) && (mask & (E | W))) bent.push(`${tx},${ty}`);
+          if (!mask) bent.push(`${tx},${ty} (single tile)`);
+        }
+        if (overVariant(id, mask) >= overVariants(id)) bad.push(`${tx},${ty} variant`);
+      }
+    }
+    check(tiles > 0, `${name}: has authored overheads (${tiles} tiles)`);
+    check(bad.length === 0, `${name}: every overhead resolves to art with a declared height`
+      + (bad.length ? ` — ${bad.slice(0, 4).join('; ')}` : ''));
+    check(thin.length === 0, `${name}: no slab is one tile thin`
+      + (thin.length ? ` — ${thin.slice(0, 4).join('; ')}` : ''));
+    check(bent.length === 0, `${name}: no pipe run turns or stands alone`
+      + (bent.length ? ` — ${bent.slice(0, 4).join('; ')}` : ''));
+
+    // The budget. It is measured against FLOOR tiles because that is what the
+    // hazard is: an overhead over a wall hides nobody, and x-ray has to stay the
+    // exception or every fight happens between flat silhouettes.
+    const pct = 100 * overFloor / floors;
+    check(pct <= 3, `${name}: overheads cover ${overFloor}/${floors} floor tiles`
+      + ` = ${pct.toFixed(2)}%, budget 3% (margin ${(3 - pct).toFixed(2)} points)`);
+  }
+
+  // Every declared clearance must be well over a body: phase 3's occlusion test
+  // is "is there anything above this actor", which is only safe while nothing in
+  // the table is low enough for a player to be visible under it from the side.
+  const lowest = Math.min(...Object.values(OVER_HEIGHT));
+  check(lowest > 4 * PLAYER_RADIUS,
+    `the lowest overhead (${lowest}px) clears a body by a wide margin`);
+  check(Object.keys(OVER).filter(k => k !== 'NONE')
+    .every(k => OVER_HEIGHT[OVER[k as keyof typeof OVER]] > 0),
+    'every overhead id declares a height');
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);

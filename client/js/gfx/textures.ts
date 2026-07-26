@@ -94,7 +94,11 @@ const MINI_WALL: Record<number, string> = {
   [MAT.WALL_BRICK]: '#a8582c',
   [MAT.WALL_WOOD]: '#8e6238',
   [MAT.WALL_CONCRETE]: '#7d949a',
-};
+  [MAT.WALL_PLASTER]: '#c69a6d',
+  [MAT.WALL_PLANK]: '#8e6238',   // deliberately WALL_WOOD's colour: at 4px per
+};                               // tile "timber" is as fine a distinction as the
+                                 // minimap can carry, and a fifth grey-brown
+                                 // would only blur the four that mean something.
 
 function buildMiniCanvas(g: Grid): HTMLCanvasElement {
   const scale = 4;
@@ -251,8 +255,11 @@ export class GfxTextures {
  * clean rather than aliased.
  */
 function bakeTiles(sheet: HTMLImageElement): Atlas {
-  // Counted, not guessed: floors (sum of variants) + walls (3 x 16) + shades
-  // (16) + props + decor. ~110 cells of 96px need ~21 per row at 2048 wide.
+  // Counted, not guessed: floors (sum of variants, 36) + walls (5 families x 16)
+  // + shades (16) + props (22) + decor (17) = 171 cells of 96px. At 2048 wide
+  // that is 20 per row and 9 of the 10 available rows, so phase 3's overheads
+  // (9-slice + two straight pairs = 13) fit — but only just. The next family
+  // after that wants a taller canvas rather than a bigger cell.
   const c = document.createElement('canvas');
   c.width = 2048; c.height = 1024;
   const x = c.getContext('2d')!;

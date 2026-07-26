@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WARZONE·3 — world art preview</title>
+<style>
+  body { margin: 0; padding: 24px 28px 60px; background: #0a0c10; color: #cfd6df;
+    font: 13px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 17px; letter-spacing: 3px; margin: 0 0 4px; color: #f2f5f9; }
+  h2 { font-size: 12px; letter-spacing: 2px; color: #e8a53f; text-transform: uppercase;
+    margin: 26px 0 8px; border-bottom: 1px solid #1f2837; padding-bottom: 5px; }
+  p.note { color: #6b7687; margin: 0 0 6px; max-width: 82ch; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+  .cellbox { text-align: center; }
+  .cellbox span { display: block; font-size: 10px; color: #596374; letter-spacing: 1px; margin-top: 3px; }
+  canvas { background: #14181f; border: 1px solid #232c3a; border-radius: 3px; display: block; }
+  canvas.map { border-color: #2f3b4d; }
+  .kind { font-size: 11px; letter-spacing: 2px; color: #8b96a7; text-transform: uppercase;
+    margin: 14px 0 4px; }
+  label { color: #8b96a7; margin-right: 16px; user-select: none; }
+  table { border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+  th, td { text-align: left; padding: 2px 14px 2px 0; color: #8b96a7; font-weight: 400; }
+  th { color: #6b7687; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+  td.n { color: #cfd6df; font-variant-numeric: tabular-nums; }
+  td.bad { color: #ff8b81; }
+  code { color: #9fb2c9; }
+</style>
+</head>
+<body>
+<h1>WORLD ART PREVIEW</h1>
+<p class="note">
+  Everything here is drawn by <code>client/js/gfx/tileset.ts</code> against the shipped
+  Kenney tilesheet — the same code the tile atlas bakes from, so what this page shows is what
+  a match shows. Geometry and materials come from <code>shared/maps.ts</code> via
+  <code>buildMap</code>, so this is also the fastest way to judge a level edit without playing it.
+  Wall composites are drawn <em>filling their cell</em> on purpose: the painted edge is the
+  collision edge, and the dashed boxes in the props row mark the tile a prop makes solid.
+</p>
+<p>
+  <label>map
+    <select id="map"><option value="compound">compound</option><option value="outbreak">outbreak</option></select>
+  </label>
+  <label>tile px <input type="range" id="zoom" min="8" max="34" step="2" value="20"></label>
+  <label><input type="checkbox" id="over" checked> overheads</label>
+  <label><input type="checkbox" id="indoor"> mark indoor</label>
+  <label><input type="checkbox" id="decor" checked> decor</label>
+  <label><input type="checkbox" id="ao" checked> floor AO</label>
+  <label><input type="checkbox" id="grid"> tile grid</label>
+</p>
+<div id="out"></div>
+
+<script type="module">
+import {
+  CELL, DECOR_ART, FLOOR_ART, FLOOR_FX, MASKS, N, E, S, W, OVER_ART, PROP_ART, SHEET_URL, WALL_ART,
+  drawDecor, drawFloor, drawOver, drawProp, drawShade, drawWall,
+  floorVariant, floorVariants, neighbourMask, overVariant, overVariants,
+} from '/js/gfx/tileset.ts';
+import {
+  DEC, MAT, OVER, OVER_HEIGHT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId, matIndoor,
+} from '/shared/maps.ts';
+import { TILE } from '/shared/constants.ts';
+
+const sheet = await new Promise((res, rej) => {
+  const i = new Image();
+  i.onload = () => res(i);
+  i.onerror = () => rej(new Error('tilesheet missing'));
+  i.src = SHEET_URL;
+});
+
+// name lookups, so a label says GRAVEL rather than 4
+const nameOf = (obj, v) => Object.keys(obj).find(k => obj[k] === v) ?? String(v);
+const out = document.getElementById('out');
+const $ = id => document.getElementById(id);
+
+function section(title, note) {
+  const h = document.createElement('h2');
+  h.textContent = title;
+  out.appendChild(h);
+  if (note) {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.innerHTML = note;
+    out.appendChild(p);
+  }
+}
+function kind(text) {
+  const d = document.createElement('div');
+  d.className = 'kind';
+  d.textContent = text;
+  out.appendChild(d);
+}
+function box(canvas, label) {
+  const d = document.createElement('div');
+  d.className = 'cellbox';
+  d.appendChild(canvas);
+  const s = document.createElement('span');
+  s.textContent = label;
+  d.appendChild(s);
+  return d;
+}
+function row(nodes) {
+  const r = document.createElement('div');
+  r.className = 'row';
+  for (const n of nodes) r.appendChild(n);
+  out.appendChild(r);
+}
+/** A CELL-sized cell rendered at `px`, with the draw function's own transform. */
+function cellCanvas(px, draw) {
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.scale(px / CELL, px / CELL);
+  draw(g);
+  return c;
+}
+
+// ---- the map itself ------------------------------------------------------
+function drawMap(name, z) {
+  const g0 = buildMap(name);
+  const c = document.createElement('canvas');
+  c.className = 'map';
+  c.width = g0.w * z; c.height = g0.h * z;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  const at = (tx, ty, draw) => {
+    g.save();
+    g.translate(tx * z, ty * z);
+    g.scale(z / CELL, z / CELL);
+    draw(g);
+    g.restore();
+  };
+  const solid = (x, y) => g0.solid(x, y);
+
+  // ground: floor everywhere but under walls (a wall composite fills its cell),
+  // then the AO band a solid neighbour casts onto the floor.
+  for (let ty = 0; ty < g0.h; ty++) {
+    for (let tx = 0; tx < g0.w; tx++) {
+      const t = g0.get(tx, ty), id = matId(g0.matAt(tx, ty));
+      if (t === T_WALL) continue;
+      const fid = t === T_FLOOR ? id : matId(g0.floorMatUnder(tx, ty));
+      at(tx, ty, gg => drawFloor(gg, sheet, fid, floorVariant(fid, tx, ty)));
+      if (t === T_FLOOR && $('ao').checked) {
+        const m = neighbourMask(solid, tx, ty);
+        if (m) at(tx, ty, gg => drawShade(gg, m));
+      }
+    }
+  }
+  if ($('decor').checked) {
+    for (const d of g0.decor) {
+      g.save();
+      g.translate(d.x * z / TILE, d.y * z / TILE);
+      g.rotate(d.rot);
+      g.scale((z / CELL) * d.s, (z / CELL) * d.s);
+      g.translate(-CELL / 2, -CELL / 2);
+      drawDecor(g, sheet, d.f);
+      g.restore();
+    }
+  }
+  for (let ty = 0; ty < g0.h; ty++) {
+    for (let tx = 0; tx < g0.w; tx++) {
+      const t = g0.get(tx, ty), id = matId(g0.matAt(tx, ty));
+      if (t === T_WALL) at(tx, ty, gg => drawWall(gg, sheet, id, neighbourMask(solid, tx, ty)));
+      else if (t === T_CRATE) at(tx, ty, gg => drawProp(gg, sheet, id));
+    }
+  }
+  // indoor flag: what phase 3's ambient split reads
+  if ($('indoor').checked) {
+    g.fillStyle = 'rgba(40,90,255,0.20)';
+    for (let ty = 0; ty < g0.h; ty++) {
+      for (let tx = 0; tx < g0.w; tx++) {
+        if (matIndoor(g0.matAt(tx, ty))) g.fillRect(tx * z, ty * z, z, z);
+      }
+    }
+  }
+  // overheads, drawn last because that is where they end up: above everything,
+  // including the actors they will hide.
+  if ($('over').checked) {
+    for (let ty = 0; ty < g0.h; ty++) {
+      for (let tx = 0; tx < g0.w; tx++) {
+        const o = g0.overAt(tx, ty);
+        if (!o) continue;
+        const m = neighbourMask((x, y) => g0.overAt(x, y) === o, tx, ty);
+        at(tx, ty, gg => drawOver(gg, sheet, o, overVariant(o, m)));
+      }
+    }
+  }
+  if ($('grid').checked) {
+    g.strokeStyle = 'rgba(255,255,255,0.07)';
+    g.lineWidth = 1;
+    for (let x = 0; x <= g0.w; x++) { g.beginPath(); g.moveTo(x * z, 0); g.lineTo(x * z, c.height); g.stroke(); }
+    for (let y = 0; y <= g0.h; y++) { g.beginPath(); g.moveTo(0, y * z); g.lineTo(c.width, y * z); g.stroke(); }
+  }
+  // spawns: the one thing that is not art but breaks a map when it moves
+  const dot = (p, col) => {
+    g.fillStyle = col;
+    g.beginPath();
+    g.arc(p.x * z / TILE, p.y * z / TILE, Math.max(2, z * 0.22), 0, 7);
+    g.fill();
+  };
+  for (const p of g0.redSpawns) dot(p, '#c94439');
+  for (const p of g0.blueSpawns) dot(p, '#3d6fc2');
+  for (const p of g0.survivorSpawns) dot(p, '#4c9e5f');
+  for (const p of g0.zombieSpawns) dot(p, '#8fb457');
+  return { canvas: c, grid: g0 };
+}
+
+// ---- per-map numbers, including the overhead budget ----------------------
+function stats(g0) {
+  let floors = 0, indoor = 0, overFloor = 0, props = 0;
+  const mats = new Map();
+  for (let ty = 0; ty < g0.h; ty++) {
+    for (let tx = 0; tx < g0.w; tx++) {
+      const t = g0.get(tx, ty), m = g0.matAt(tx, ty), id = matId(m);
+      mats.set(id, (mats.get(id) ?? 0) + 1);
+      if (t === T_FLOOR) { floors++; if (matIndoor(m)) indoor++; }
+      if (t === T_CRATE) props++;
+      if (t === T_FLOOR && g0.overAt(tx, ty)) overFloor++;
+    }
+  }
+  const pct = (100 * overFloor / floors);
+  const t = document.createElement('table');
+  const rows = [
+    ['size', `${g0.w} x ${g0.h} tiles`],
+    ['floor tiles', String(floors)],
+    ['indoor floor', `${indoor} (${(100 * indoor / floors).toFixed(0)}%)`],
+    ['props', String(props)],
+    ['decor', String(g0.decor.length)],
+    ['overhead over floor', `${overFloor} — ${pct.toFixed(2)}% of floor, budget 3%`],
+    ['materials used', [...mats.keys()].filter(id => id !== MAT.VOID)
+      .map(id => nameOf(MAT, id)).join(', ')],
+  ];
+  t.innerHTML = '<tr><th>metric</th><th>value</th></tr>' + rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td class="${k === 'overhead over floor' && pct > 3 ? 'bad' : 'n'}">${v}</td></tr>`).join('');
+  return t;
+}
+
+// ---- the tables ---------------------------------------------------------
+function drawCatalogue(z) {
+  const cell = px => px;
+  section('floors — every material, every baked variant',
+    'Variant is chosen by a hash of tile position, so the ground never reshuffles on reconnect. '
+    + '<code>FLOOR_FX</code> adds generated grain and colour washes where the pack has nothing suitable: '
+    + 'there is no textured asphalt in it, and its interior colours are shop-bright.');
+  for (const key of Object.keys(FLOOR_ART)) {
+    const id = Number(key);
+    const fx = FLOOR_FX[id];
+    kind(`${nameOf(MAT, id)} · ${floorVariants(id)} variants`
+      + (fx ? ` · ${[fx.grain ? 'grain ' + fx.grain : '', fx.wash ? 'wash' : ''].filter(Boolean).join(' + ')}` : ''));
+    const nodes = [];
+    for (let v = 0; v < floorVariants(id); v++) {
+      nodes.push(box(cellCanvas(cell(72), g => drawFloor(g, sheet, id, v)), `v${v}`));
+    }
+    row(nodes);
+  }
+
+  section('walls — 16 neighbour variants per family',
+    'The pack\'s wall tiles put walls on tile <em>borders</em>; this grid makes a whole tile solid. So the '
+    + 'cell is filled edge to edge with the pack\'s material and its own edge language (2px keyline, lit '
+    + 'north face) is redrawn only on the faces that front onto floor. Bit order N=1 E=2 S=4 W=8, set means '
+    + '<em>that neighbour is solid</em>, so mask 15 is a wall with no exposed face.');
+  for (const key of Object.keys(WALL_ART)) {
+    const id = Number(key);
+    kind(nameOf(MAT, id));
+    const nodes = [];
+    for (let m = 0; m < MASKS; m++) {
+      nodes.push(box(cellCanvas(cell(56), g => drawWall(g, sheet, id, m)), String(m)));
+    }
+    row(nodes);
+  }
+
+  section('floor ambient occlusion — the half of a wall\'s shadow that lands on the ground',
+    'A separate sprite on the <em>floor</em> tile, because a wall texture is clipped to its own cell. '
+    + 'Gradients rather than flat bands, so two overlapping falloffs darken a corner twice and 47 hand-authored '
+    + 'variants are not needed.');
+  row(Array.from({ length: MASKS }, (_, m) =>
+    box(cellCanvas(cell(56), g => { g.fillStyle = '#6a7480'; g.fillRect(0, 0, CELL, CELL); drawShade(g, m); }), String(m))));
+
+  section('solid props — furniture and boxes, all with a crate\'s collision',
+    'Each of these makes its whole tile solid (dashed box). They were picked for coverage as well as subject: '
+    + 'the pack\'s thin pieces would be a hitbox you bounce off well away from the art.');
+  row(Object.keys(PROP_ART).map(key => {
+    const id = Number(key);
+    const c = cellCanvas(cell(66), g => {
+      drawFloor(g, sheet, MAT.WOOD, 0);
+      drawProp(g, sheet, id);
+      g.strokeStyle = 'rgba(255,255,255,0.55)';
+      g.setLineDash([6, 5]);
+      g.lineWidth = 2;
+      g.strokeRect(1, 1, CELL - 2, CELL - 2);
+    });
+    return box(c, nameOf(MAT, id));
+  }));
+
+  section('decor — free position, never collides, never occludes',
+    'Placed by centre with a rotation and a scale, above the ground and below anything solid.');
+  row(Object.keys(DECOR_ART).map(key => {
+    const f = Number(key);
+    return box(cellCanvas(cell(60), g => { drawFloor(g, sheet, MAT.ASPHALT, 0); drawDecor(g, sheet, f); }),
+      nameOf(DEC, f));
+  }));
+
+  section('overheads — authored now, drawn above the actors in phase 3',
+    'A slab autotiles as a 9-slice (so an awning of any size gets its own trim, and must be at least two '
+    + 'tiles in each direction — the set has no piece with both a north and a south edge). A line has only '
+    + 'the two straight pieces, so runs cannot turn. Height is the clearance underneath: it orders overlapping '
+    + 'overheads, and every value is well over head height, which is what makes "is anything above this actor" '
+    + 'a safe question to ask.');
+  for (const key of Object.keys(OVER_ART)) {
+    const id = Number(key);
+    kind(`${nameOf(OVER, id)} · ${OVER_ART[id].kind} · clearance ${OVER_HEIGHT[id]}px`);
+    row(Array.from({ length: overVariants(id) }, (_, v) =>
+      box(cellCanvas(cell(58), g => { drawFloor(g, sheet, MAT.ASPHALT, 1); drawOver(g, sheet, id, v); }),
+        `v${v}`)));
+  }
+  kind('assembled: a 4x3 awning, a pipe crossing, both through overVariant()');
+  const demo = document.createElement('canvas');
+  const dz = 44;
+  demo.width = dz * 8; demo.height = dz * 4;
+  {
+    const g = demo.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    const plan = (x, y) => (x >= 1 && x <= 4 && y >= 0 && y <= 2 ? OVER.AWNING
+      : y === 3 && x >= 0 && x <= 7 ? OVER.PIPE
+      : x === 6 && y <= 3 ? OVER.CONDUIT : 0);
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 8; x++) {
+      g.save();
+      g.translate(x * dz, y * dz);
+      g.scale(dz / CELL, dz / CELL);
+      drawFloor(g, sheet, MAT.ASPHALT, (x + y) % 6);
+      const o = plan(x, y);
+      if (o) drawOver(g, sheet, o, overVariant(o, neighbourMask((qx, qy) => plan(qx, qy) === o, x, y)));
+      g.restore();
+    }
+  }
+  row([box(demo, 'overhead autotiling')]);
+}
+
+function render() {
+  out.innerHTML = '';
+  const z = Number($('zoom').value);
+  const name = $('map').value;
+  section(`map: ${name}`,
+    'Drawn in the renderer\'s own layer order: floor everywhere, AO, decor, walls and props, then overheads '
+    + 'on top. Dots are spawns (red/blue TDM, green survivor, pale green zombie).');
+  const { canvas, grid } = drawMap(name, z);
+  row([box(canvas, `${name} · ${z}px per tile`)]);
+  out.appendChild(stats(grid));
+  drawCatalogue(z);
+}
+
+// The controls are also URL parameters (?map=outbreak&zoom=28&grid=1), so a
+// particular view can be linked, reloaded, or handed to a screenshot tool.
+const q = new URLSearchParams(location.search);
+for (const id of ['map', 'zoom', 'over', 'indoor', 'decor', 'ao', 'grid']) {
+  const el = $(id);
+  if (q.has(id)) {
+    if (el.type === 'checkbox') el.checked = q.get(id) !== '0';
+    else el.value = q.get(id);
+  }
+  el.addEventListener('input', render);
+}
+render();
+</script>
+</body>
+</html>

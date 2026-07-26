@@ -27,7 +27,7 @@
 // the collision edge by construction, which is the property the whole scheme
 // exists to guarantee.
 import { TILE } from '../../../shared/constants.ts';
-import { DEC, MAT } from '../../../shared/maps.ts';
+import { DEC, MAT, OVER } from '../../../shared/maps.ts';
 
 type Ctx = CanvasRenderingContext2D;
 /** A cell on the sheet, [col, row]. */
@@ -80,6 +80,19 @@ export const FLOOR_ART: Record<number, Cell[]> = {
   [MAT.CONCRETE]: [[8, 0], [9, 0], [10, 0], [0, 12], [2, 12]],
   [MAT.WOOD]: [[14, 3], [15, 3], [16, 3]],            // (212,157,104) boards
   [MAT.FLOORTILE]: [[11, 0]],                         // (245,245,245) checker
+  // (216,127,74) slabs — the same orange as the brick, which is why this one
+  // cannot be used unwashed: a lobby floor the colour of the wall behind it
+  // reads as one continuous surface.
+  [MAT.TILE_RED]: [[12, 0], [13, 0]],
+  // The one fully-interior cell of each of the pack's two rugs. Measured, because
+  // it matters: of the rug's four rows only row 14 is pure fill — rows 13 and 15
+  // carry a slice of the rug's own pale border, which tiled across a room draws a
+  // stripe every tile. The border cells themselves are a proper autotile set and
+  // are deliberately unused: a fitted carpet meets boards on a hard line, and
+  // that is the one place in this pipeline where a hard material seam is the
+  // correct drawing rather than a missing transition (see tasks/WORLD-ART.md).
+  [MAT.CARPET_RED]: [[19, 14]],
+  [MAT.CARPET_GREEN]: [[22, 14]],
 };
 
 /**
@@ -104,7 +117,26 @@ export interface FloorFx { variants?: number; grain?: number; wash?: string }
 export const FLOOR_FX: Record<number, FloorFx> = {
   [MAT.ASPHALT]: { variants: 6, grain: 0.55 },
   [MAT.GRAVEL]: { variants: 4, grain: 0.40, wash: 'rgba(52,44,36,0.26)' },
-  [MAT.CONCRETE]: { variants: 5, grain: 0.16 },
+  // The wash is not cosmetic: WALL_CONCRETE's body cell is one of this material's
+  // own floor variants, so unwashed, a concrete room and the concrete wall around
+  // it are the same colour and the room reads as one flat field with a keyline
+  // drawn on it. Floors sit in shadow and walls catch the light, so the floor
+  // going darker is also the right way round.
+  [MAT.CONCRETE]: { variants: 5, grain: 0.16, wash: 'rgba(26,36,42,0.30)' },
+  // The pack's outdoor green is a kelly green that reads as astroturf over any
+  // real area, so the lots get the same knock-back treatment the earth already
+  // had.
+  [MAT.GRASS]: { variants: 4, wash: 'rgba(34,48,26,0.32)' },
+  // The pack's interior colours are shop-window bright — its rugs are a signal
+  // orange (232,106,23) and a green that is the EXACT grass colour (39,174,96),
+  // so an unwashed carpet reads as a lawn indoors. The washes take them to the
+  // worn tones a lit-from-one-lamp room wants, and darken the terracotta enough
+  // to separate it from the brickwork. Both carpets are ONE flat colour at
+  // source, which is the same problem asphalt has, so they lean on grain and
+  // variants for their surface exactly as it does.
+  [MAT.TILE_RED]: { variants: 3, grain: 0.14, wash: 'rgba(38,22,26,0.32)' },
+  [MAT.CARPET_RED]: { variants: 4, grain: 0.42, wash: 'rgba(48,18,10,0.42)' },
+  [MAT.CARPET_GREEN]: { variants: 4, grain: 0.42, wash: 'rgba(12,32,22,0.50)' },
 };
 
 /** How many baked variants a floor material has. */
@@ -128,16 +160,56 @@ export const WALL_ART: Record<number, WallArt> = {
   [MAT.WALL_WOOD]: { body: [14, 1], keyline: '#956536', cap: '#c98948' },
   // poured concrete: (156,192,194) with (166,201,203) highlights
   [MAT.WALL_CONCRETE]: { body: [0, 12], keyline: '#648587', cap: '#a6c9cb' },
+  // The pale third of the pack's three masonry tones — (212,157,104) with
+  // (187,138,91) joints. Interior partitions: what one flat is divided from the
+  // next by, so it must not read as an outside wall.
+  [MAT.WALL_PLASTER]: { body: [14, 3], keyline: '#8a6444', cap: '#e2ab77' },
+  // Nailed boards, the same palette as WALL_WOOD by measurement (196,134,71 /
+  // 180,123,65) but with the pack's actual plank-and-nail face rather than its
+  // bond pattern — hoardings and boarded shopfronts.
+  [MAT.WALL_PLANK]: { body: [18, 1], keyline: '#956536', cap: '#c98948' },
 };
 
 // ---- solid props (tiles[] === T_CRATE) ------------------------------------
 // Drawn on a TRANSPARENT background over the floor sprite, because none of them
 // fills the cell — a crate sits on the ground it happens to be standing on
 // (see Grid.floorMatUnder). Collision is identical for all of them.
+//
+// Cells here were chosen on *extent* as much as on subject, because a prop's tile
+// is solid edge to edge: every one below spans at least 0.79 of the cell in both
+// directions (measured in test/touchdrive.ts — worst is SOFA_M at 0.797, and the
+// plain crate is only 0.844), which is what keeps "the visual edge is the
+// collision edge" as true for furniture as it already was for boxes. The pack's
+// thinner pieces — bare chairs, stools, low benches — are all under half a cell
+// and are therefore not here at all: a chair you bounce off two feet away is
+// worse than no chair.
+//
+// Nothing is rotated. The pieces with a facing (sofas, beds, worktops) are all
+// drawn with their back to the north and are authored against a north wall;
+// giving the table a rotation field would let a future author put a sofa's back
+// against open floor without noticing, and no room here needs it.
 export const PROP_ART: Record<number, Cell> = {
   [MAT.CRATE]: [20, 4],         // wooden crate, 54x54 of a 64 cell
   [MAT.CRATE_BLUE]: [22, 4],    // blue shipping box
   [MAT.CRATE_GREEN]: [22, 5],   // green shipping box
+  // Timber frame with a pale top, full cell. Note what it is NOT: the middle cell
+  // of the pack's big table, which is one flat brown with no detail at all —
+  // baked as a prop that draws as a hole in the room rather than a bench.
+  [MAT.WORKBENCH]: [24, 19],
+  [MAT.DESK]: [23, 17],         // desk with a grey worktop
+  [MAT.TABLE]: [23, 16],        // plain table
+  [MAT.TABLE_ROUND]: [19, 18],  // round table — the one prop with no facing
+  [MAT.COUNTER]: [24, 11],      // white worktop, back edge to the north
+  [MAT.SINK]: [25, 11],
+  [MAT.STOVE]: [26, 11],        // four-burner hob
+  [MAT.OVEN]: [25, 10],
+  // Sofas and beds are runs: the pieces only read left-to-right / foot-to-head,
+  // which is what `propRun` in shared/maps.ts exists to keep true.
+  [MAT.SOFA_L]: [14, 16], [MAT.SOFA_M]: [15, 16], [MAT.SOFA_R]: [16, 16],
+  [MAT.SOFA_RED_L]: [14, 17], [MAT.SOFA_RED_M]: [15, 17], [MAT.SOFA_RED_R]: [16, 17],
+  [MAT.ARMCHAIR]: [17, 17],
+  [MAT.BED_FOOT]: [20, 2], [MAT.BED_HEAD]: [20, 3],
+  [MAT.BED_RED_FOOT]: [23, 2], [MAT.BED_RED_HEAD]: [23, 3],
 };
 
 // ---- decor (free-position, never collides, never occludes) ----------------
@@ -154,7 +226,69 @@ export const DECOR_ART: Record<number, Cell> = {
   [DEC.STAIN_B]: [22, 11],
   [DEC.PAPER]: [24, 7],
   [DEC.WEED]: [18, 8],
+  [DEC.PLATE]: [25, 7],         // stacked plates (PAPER above is the single one)
+  [DEC.CUPS]: [19, 11],
+  [DEC.POT]: [20, 11],
+  [DEC.PLANT]: [25, 4],
+  [DEC.BUSH]: [20, 6],
 };
+
+// ---- overheads (Grid.over) ------------------------------------------------
+//
+// Two shapes of overhead, because the pack gives two and they autotile
+// differently:
+//
+//   slab  a 9-slice, exactly like the wall composites but keyed on "is the
+//         neighbour the same overhead" instead of "is the neighbour solid". The
+//         pack ships the timber deck as a real 3x3 with edges and corners, so an
+//         awning of any rectangular size draws with its own trim. It has no
+//         piece with a north AND a south edge, so a slab must be at least two
+//         tiles in each direction — `test/matchflow.ts` asserts that, since a
+//         one-tile-thin awning would silently draw with a side missing.
+//   line  a pipe run: one cell horizontal, one vertical, picked by whether the
+//         neighbours are up/down or left/right. There is no elbow in the set, so
+//         runs must be straight — also asserted.
+export type OverArt =
+  | { kind: 'slab'; cells: Cell[] }   // 9 cells, row-major NW..SE
+  | { kind: 'line'; h: Cell; v: Cell };
+
+export const OVER_ART: Record<number, OverArt> = {
+  // Timber deck, (193,132,70) planking with a dark rim: a loading-dock or
+  // shopfront awning seen from above.
+  [OVER.AWNING]: {
+    kind: 'slab',
+    cells: [[24, 12], [25, 12], [26, 12], [24, 13], [25, 13], [26, 13],
+            [24, 14], [25, 14], [26, 14]],
+  },
+  // Fat orange pipe, centred in its cell (measured: 56px of a 128px cell,
+  // centred — the pack's other pipe cells hug a cell edge and would draw a run
+  // that looks half a tile off).
+  [OVER.PIPE]: { kind: 'line', h: [8, 17], v: [8, 16] },
+  // The thin pale run, 36px of 128: conduit rather than plumbing.
+  [OVER.CONDUIT]: { kind: 'line', h: [12, 19], v: [12, 18] },
+};
+
+/** How many baked variants an overhead has: 9 for a slab, 2 for a line. */
+export function overVariants(id: number): number {
+  const a = OVER_ART[id];
+  return a ? (a.kind === 'slab' ? 9 : 2) : 0;
+}
+
+/**
+ * Which variant a tile of overhead uses, from the mask of same-overhead
+ * neighbours. Slabs pick a 9-slice cell; lines pick vertical when the run is
+ * vertical (N or S neighbour) and horizontal otherwise, which makes a lone tile
+ * horizontal — a single-tile pipe is a nonsense either way, and there is a test
+ * for the corner case that actually matters (an elbow, which has no art).
+ */
+export function overVariant(id: number, mask: number): number {
+  const a = OVER_ART[id];
+  if (!a) return 0;
+  if (a.kind === 'line') return (mask & (N | S)) ? 1 : 0;
+  const row = !(mask & N) ? 0 : !(mask & S) ? 2 : 1;
+  const col = !(mask & W) ? 0 : !(mask & E) ? 2 : 1;
+  return row * 3 + col;
+}
 
 // ---- registry keys --------------------------------------------------------
 export const floorKey = (m: number, v: number): string => `floor-${m}-${v}`;
@@ -162,10 +296,12 @@ export const wallKey = (m: number, mask: number): string => `wall-${m}-${mask}`;
 export const shadeKey = (mask: number): string => `shade-${mask}`;
 export const propKey = (m: number): string => `prop-${m}`;
 export const decorKey = (f: number): string => `decor-${f}`;
+export const overKey = (id: number, v: number): string => `over-${id}-${v}`;
 
 export const isFloorMat = (id: number): boolean => id in FLOOR_ART;
 export const isWallMat = (id: number): boolean => id in WALL_ART;
 export const isPropMat = (id: number): boolean => id in PROP_ART;
+export const isOverId = (id: number): boolean => id in OVER_ART;
 
 /**
  * Picks a floor variant for a tile. Deterministic in position, so two clients
@@ -292,10 +428,25 @@ export function drawDecor(g: Ctx, img: Img, f: number): void {
   blit(g, img, c);
 }
 
-/** Solid-neighbour mask for a tile, in the N/E/S/W bit order above. */
+/**
+ * One tile of an overhead prop. Transparent where the prop is not — a pipe is a
+ * band across its cell, and what shows either side of it is the world below,
+ * which is the whole point of drawing these above the actors.
+ */
+export function drawOver(g: Ctx, img: Img, id: number, variant: number): void {
+  const a = OVER_ART[id];
+  if (!a) return;
+  blit(g, img, a.kind === 'slab' ? a.cells[variant % 9] : (variant ? a.v : a.h));
+}
+
+/**
+ * Neighbour mask for a tile, in the N/E/S/W bit order above. `same` answers "is
+ * the tile on that side the same thing as this one" — solidity for walls, the
+ * same overhead id for overheads.
+ */
 export function neighbourMask(
-  solid: (tx: number, ty: number) => boolean, tx: number, ty: number,
+  same: (tx: number, ty: number) => boolean, tx: number, ty: number,
 ): number {
-  return (solid(tx, ty - 1) ? N : 0) | (solid(tx + 1, ty) ? E : 0)
-    | (solid(tx, ty + 1) ? S : 0) | (solid(tx - 1, ty) ? W : 0);
+  return (same(tx, ty - 1) ? N : 0) | (same(tx + 1, ty) ? E : 0)
+    | (same(tx, ty + 1) ? S : 0) | (same(tx - 1, ty) ? W : 0);
 }
