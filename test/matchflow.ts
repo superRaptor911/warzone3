@@ -27,7 +27,7 @@ import {
 } from '../server/db.ts';
 import { tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
-import { VIEW_TARGET_W, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
+import { VIEW_TARGET_W, ZOOM_MAX, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
 import {
   AIM_TAU_FAR, AIM_TAU_NEAR, DEAD_ZONE, STICK_R, deflection, newAimSmooth,
   newFireCadence, newLead, releaseAim, stickKeys, tickAimSmooth, tickFireCadence, tickLead,
@@ -542,10 +542,23 @@ console.log('hitscan');
 // ---- viewport: zoom + quality tier ----
 console.log('\nviewport math');
 {
-  check(zoomFor(1920, 1080) === 1, 'desktop 1920x1080 renders at zoom 1 (unchanged)');
-  check(zoomFor(1366, 768) === 1, 'small laptop still zoom 1');
+  // The target is symmetric: below it we scale down, above it we scale UP. The
+  // old "never zoom in" rule is what made a big monitor a wide-angle lens — see
+  // the note on VIEW_TARGET_W for why parity with the pre-zoom renderer was not
+  // worth showing a 1920x1080 player 2.6x the world area of a 1300x620 one.
+  const desk = zoomFor(1920, 1080);
+  check(Math.abs(desk - 1920 / VIEW_TARGET_W) < 1e-9, `1920x1080 zooms IN (${desk.toFixed(3)})`);
+  check(Math.round(1920 / desk) === VIEW_TARGET_W,
+    `and sees exactly the target width (${Math.round(1920 / desk)} world px)`);
   check(zoomFor(VIEW_TARGET_W, 9999) === 1, 'exactly the target width is the zoom-1 boundary');
-  check(zoomFor(3440, 1440) === 1, 'never zooms IN on an ultrawide');
+  check(zoomFor(1366, 768) > 1 && zoomFor(1366, 768) < 1.1,
+    `a small laptop barely moves (${zoomFor(1366, 768).toFixed(3)})`);
+  // Two screens both above the target see the SAME world, which is the point of
+  // the change: field of view stops being a property of the monitor.
+  check(Math.abs(1920 / zoomFor(1920, 1080) - 2560 / zoomFor(2560, 1440)) < 1e-6,
+    '1080p and 1440p see the same world width');
+  check(zoomFor(3840, 2160) === ZOOM_MAX, 'a 4K window hits the zoom ceiling, not a bigger view');
+  check(zoomFor(9999, 9999) === ZOOM_MAX, 'and the ceiling holds however large the window');
   const phone = zoomFor(844, 390);
   check(phone > 0.6 && phone < 0.66, `landscape phone zooms out (${phone.toFixed(3)})`);
   check(Math.abs(zoomFor(844, 390) - 390 / 620) < 1e-9, 'height drives the phone zoom, not width');

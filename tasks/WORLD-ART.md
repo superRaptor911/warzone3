@@ -60,6 +60,17 @@ conclusion, so it is recorded.
   and prop density, not acreage. Enlarging silently slackens two tuned systems:
   `MAX_ZOMBIES_ALIVE` is 26, so a bigger Outbreak is a sparser one, and TDM's
   40 kills / 5 minutes assumes current walk distances.
+  - **The corollary took a year to notice: fixed small maps make the camera's
+    zoom a level-design decision.** Nothing in this file ever decided how much
+    world a player sees, and `zoomFor` only ever scaled *down* (parity with the
+    pre-zoom renderer), so at 1:1 a 1920×1080 client saw 91% of Outbreak's width
+    and *all* of Compound's — at which point the camera pins to the map centre
+    and stops tracking the player sideways. A place you can survey from your
+    chair is not a place you move through, and the levels were authored as
+    rooms, lanes and thresholds. So the target is now symmetric and every client
+    frames the same 1300×620 world px (`client/js/view.ts`, and see CLAUDE.md →
+    Rendering for the ceiling and the weapon-range trade). If the maps ever do
+    grow, that is the number to re-take with them.
 - **Props may occlude, with an x-ray pass, and the information delta must be
   zero.** Occlusion in a fixed top-down camera is *not* view-dependent: a car
   roof drawn over the tile north of it hides that player from all ten players at
