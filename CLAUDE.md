@@ -92,6 +92,11 @@ Twin-stick: a fixed 8-way dpad on the left half, a floating aim stick on the rig
 
 ### World art (`client/assets/`, `client/js/gfx/tileset.ts`, `shared/maps.ts`)
 
+> This is phase 1 of three: the pipeline, against the original layouts. The level
+> redesign (rotational Compound, apartment-block Outbreak, overheads) and the
+> lighting/x-ray work are specified in **`tasks/WORLD-ART.md`**, along with the
+> design decisions behind them — read that before changing maps or lighting.
+
 The world is drawn from Kenney's **Topdown Shooter** tilesheet, CC0, shipped
 **unmodified** as `client/assets/tilesheet.png` (27×20 grid of 128px cells; the
 index formula and a `cmp` command to verify provenance are in
