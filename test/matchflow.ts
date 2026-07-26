@@ -35,7 +35,7 @@ import {
 import {
   ASSIST_CONE, ASSIST_MAX_PULL, newAssist, onTarget, releaseAssist, tickAimAssist,
 } from '../client/js/assist.ts';
-import { WEAPONS, fireIntervalMs } from '../shared/weapons.ts';
+import { WEAPONS, fireIntervalMs, isPrimary } from '../shared/weapons.ts';
 import { CONFIRM_GRACE, cancelReload, newReloadMirror, startReload, tickReload } from '../client/js/reload.ts';
 
 let failures = 0;
@@ -178,7 +178,7 @@ console.log('hit rewind');
   room.destroy();
 }
 
-// ---- Zombie: wipe -> game over -> reset; bot buying ----
+// ---- Zombie: wipe -> game over -> reset; the shop ----
 console.log('zombie match flow');
 {
   const room = new ZombieRoom('z1');
@@ -195,25 +195,81 @@ console.log('zombie match flow');
   check(room.state === 'over', 'full squad wipe triggers game over');
   room.modeUpdate(999);
   check(room.state === 'break' && room.wave === 0, 'game resets to fresh run');
-  check(p1.alive && p1.points === 400 && p1.slots.length === 1, 'players reset to pistol + start cash');
+  check(p1.alive && p1.points === 400, 'players reset to start cash');
+  // p1 is a bot, so this is the re-roll assertion: nothing buys weapons any more,
+  // so a reset that left it on a pistol would strand it there for the whole run.
+  check(p1.slots.length === 2 && isPrimary(p1.slots[1]),
+    `a wiped bot is re-armed, not re-pistoled (${p1.slots.join('+')})`);
 
-  // bot buying
-  p1.points = 5000;
-  room.botBuy(p1);
-  check(p1.slots.includes('smg'), 'bot buys smg first');
-  room.botBuy(p1);
-  check(p1.slots.includes('rifle'), 'bot upgrades to rifle');
-  room.botBuy(p1);
-  check(p1.slots.includes('sniper'), 'bot upgrades to sniper');
+  // human shop edge cases — on an actual human, because a bot's rolled primary
+  // may already be the rifle these lines try to buy
+  const hs = room.addPlayer({ name: 'H', bot: false })!;
+  check(hs.slots.length === 1 && hs.slots[0] === 'pistol', 'a human starts on the pistol alone');
+  hs.points = 0;
+  room.buy(hs, 'rifle');
+  check(!hs.slots.includes('rifle'), 'cannot buy without points');
+  hs.points = 10000;
+  room.buy(hs, 'rifle');
+  room.buy(hs, 'rifle');
+  check(hs.points === 10000 - 800, 'no double-purchase of owned weapon');
+  room.destroy();
+}
 
-  // human shop edge cases
-  p2.points = 0;
-  room.buy(p2, 'rifle');
-  check(!p2.slots.includes('rifle'), 'cannot buy without points');
-  p2.points = 10000;
-  room.buy(p2, 'rifle');
-  room.buy(p2, 'rifle');
-  check(p2.points === 10000 - 800, 'no double-purchase of owned weapon');
+// ---- Zombie: bot loadout + heal charges ----
+// Bots no longer buy anything, so both halves of what replaced botBuy have to
+// hold: they must arrive armed on every path that can spawn one, and the heal
+// charges that stand in for the deleted 200-point purchase must be capped,
+// refilled per wave, bot-only, and incapable of undoing a death.
+console.log('zombie bot loadout + heal charges');
+{
+  const room = new ZombieRoom('z3');
+  room.botTarget = 4;
+  room.fillBots();
+  check(room.players.size === 4, 'squad filled');
+  let armed = 0;
+  const rolled = new Set<string>();
+  for (const b of room.players.values()) {
+    if (b.slots.length === 2 && b.slots[0] === 'pistol' && isPrimary(b.slots[1])
+      && b.slot === 1 && b.ammo.pistol && b.ammo[b.slots[1]]) armed++;
+    rolled.add(b.slots[1]);
+  }
+  check(armed === 4, `every bot carries a pistol and a rolled primary (${[...rolled].join(', ')})`);
+
+  // The join's `primary` is deliberately unread in this mode: honouring it would
+  // hand any human a free sniper at wave 1 by editing one wire message.
+  const h = room.addPlayer({ name: 'H2', bot: false, primary: 'sniper' })!;
+  check(h.slots.length === 1 && h.slots[0] === 'pistol', 'a human cannot arm itself through the join');
+
+  // A wipe re-rolls rather than re-pistols — asserted on every bot, since the
+  // failure mode is silent and only shows up after someone plays past a reset.
+  room.resetGame();
+  let rearmed = 0;
+  for (const b of room.players.values()) if (b.bot && b.slots.length === 2 && isPrimary(b.slots[1])) rearmed++;
+  check(rearmed === 4, 'every bot is re-armed after a squad wipe');
+  check(h.slots.length === 1, 'and the human is back on the pistol');
+
+  // Charges: two per wave, spent when a hit leaves the bot under 40.
+  const bot = [...room.players.values()].find(p => p.bot)!;
+  room.startWave(1);
+  check(bot.botHeals === 2 && h.botHeals === 0, 'startWave arms bots with two charges, humans with none');
+  bot.protectT = 0; h.protectT = 0;
+  room.damagePlayer(bot, 70, null, 'claws', bot.x, bot.y);
+  check(bot.hp === PLAYER_HP && bot.botHeals === 1, 'a hit under 40 spends a charge and heals to full');
+  room.damagePlayer(bot, 70, null, 'claws', bot.x, bot.y);
+  check(bot.hp === PLAYER_HP && bot.botHeals === 0, 'and again on the second');
+  room.damagePlayer(bot, 70, null, 'claws', bot.x, bot.y);
+  check(bot.hp === 30 && bot.alive, 'the third stands: charges are capped, not free');
+
+  // 40 is above the brute's 34 so a charge always beats a single blow — but a
+  // charge is a heal, never a death save.
+  room.startWave(2);
+  check(bot.botHeals === 2, 'the next wave refills them');
+  room.damagePlayer(bot, 1000, null, 'claws', bot.x, bot.y);
+  check(!bot.alive && bot.botHeals === 2, 'a lethal hit kills and spends nothing');
+
+  // Humans never self-heal, whatever their health.
+  room.damagePlayer(h, 70, null, 'claws', h.x, h.y);
+  check(h.hp === 30, 'a hurt human stays hurt');
   room.destroy();
 }
 

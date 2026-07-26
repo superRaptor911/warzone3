@@ -14,13 +14,51 @@ import {
   PICKUP_RADIUS, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
   type ShopItemId,
 } from '../shared/constants.ts';
-import type { WeaponId } from '../shared/weapons.ts';
+import { PRIMARIES, type PrimaryId } from '../shared/weapons.ts';
 import type { PickupSnap, Vec2, ZombieModeState, ZombieSnap, ZombieTypeId } from '../shared/types.ts';
 
 const START_POINTS = 400;
-const BOT_BUY_ORDER: WeaponId[] = ['smg', 'rifle', 'sniper'];
 const CHECKPOINT_EVERY = 5; // reaching wave 5/10/15… records a checkpoint
 const CHECKPOINT_MAX = 995;
+
+/**
+ * A squadmate's gun, rolled once per spawn.
+ *
+ * Bots used to start on the pistol like everyone and climb a fixed ladder
+ * (smg -> rifle -> sniper) out of `botBuy` at each wave break. That is gone:
+ * the sniper costs 1200 against wave bonuses of `100 + 25 * wave`, so every bot
+ * reached the top of it by about wave 5 and the squad was four identical guns
+ * for the rest of the run. Rolling instead is what makes a squad read as four
+ * fighters, and it is the only way the shotgun ever appears in one — it was
+ * never on the ladder at all.
+ *
+ * Free, and uniform over all four primaries, exactly as `TdmRoom.fillBots`
+ * arms its bots. The trade is deliberate and worth knowing: a bot's gun no
+ * longer scales with the wave, so a wave-25 shotgun bot deals less than the
+ * sniper bot it replaces. `BOT_HEALS_PER_WAVE` is what keeps that bot alive;
+ * it does not give the damage back.
+ */
+export function rollBotPrimary(): PrimaryId {
+  return PRIMARIES[Math.floor(Math.random() * PRIMARIES.length)];
+}
+
+/**
+ * Free full heals a bot gets per wave, and the health that spends one.
+ *
+ * This replaces the 200-point heal `botBuy` used to make at every wave break,
+ * which was uncapped — the bonuses always covered it. Two is a cap where there
+ * was none, and the threshold is derived rather than tuned: a brute's 34 is the
+ * largest single hit in the game and `hpMult` scales zombie *health* only, never
+ * damage, so 40 sits above it for the whole run. While a bot holds a charge no
+ * single blow can kill it, and it is never left sitting under 40 with charges in
+ * hand — which is why the only lethal hits it can take are ones its spent
+ * charges already explain.
+ *
+ * Server-side and never on the wire, so both live here rather than in
+ * `shared/constants.ts`.
+ */
+const BOT_HEALS_PER_WAVE = 2;
+const BOT_HEAL_AT = 40;
 
 // Starting cash for a run that begins at wave `cp`: base cash plus the
 // wave-clear bonuses of every skipped wave (kill income counts as "spent").
@@ -103,16 +141,40 @@ export class ZombieRoom extends Room {
       } else return null;
     }
     const p = createPlayer({ name, team: TEAM.SURVIVOR, bot, primary: 'pistol' });
-    p.slots = ['pistol'];
-    p.ammo = { pistol: makeAmmo('pistol') };
-    p.slot = 0;
-    p.points = checkpointPoints(this.wave); // wave-appropriate cash for mid-run joiners
+    this.armLoadout(p);
+    // Wave-appropriate cash for mid-run joiners. A bot's copy is inert — nothing
+    // a bot owns spends points now (see rollBotPrimary) — and it is left that way
+    // deliberately: suppressing it means a `!p.bot` branch here, in `endWave`, in
+    // `resetGame` and in `damageZombie`, four of them, to hide a number that only
+    // ever ships in the per-client `self` block.
+    p.points = checkpointPoints(this.wave);
     if (bot) p.botCtl = createBotController();
     this.players.set(p.id, p);
     this.spawnAt(p, this.grid.survivorSpawns[this.players.size % this.grid.survivorSpawns.length]);
     p.protectT = SPAWN_PROTECT_MS / 1000;
     this.event({ e: 'join', name: p.name, team: TEAM.SURVIVOR });
     return p;
+  }
+
+  /**
+   * Set a survivor's starting guns. A human gets the pistol and nothing else:
+   * the join's `primary` is deliberately never read in this mode, so nobody can
+   * arm themselves at wave 1 by editing a join message. A bot gets the pistol
+   * plus a rolled primary, and its heal charges with it.
+   *
+   * Called from both `addPlayer` and `resetGame`, and that is the whole reason
+   * it is a method. A squad wipe re-pistols everyone and used to rely on
+   * `botBuy` climbing the ladder back; with the ladder gone, a reset that
+   * skipped this would strand every bot on a pistol for good — and with no
+   * symptom at all until someone played past a wipe.
+   */
+  armLoadout(p: Player): void {
+    const primary = p.bot ? rollBotPrimary() : null;
+    p.slots = primary ? ['pistol', primary] : ['pistol'];
+    p.ammo = { pistol: makeAmmo('pistol') };
+    if (primary) p.ammo[primary] = makeAmmo(primary);
+    p.slot = p.slots.length - 1;
+    p.botHeals = p.bot ? BOT_HEALS_PER_WAVE : 0;
   }
 
   // One squad, so `botTarget` is the whole roster: "2 squadmates" is a target
@@ -209,11 +271,18 @@ export class ZombieRoom extends Room {
   }
 
   /**
-   * Hand a crate to anyone standing on it. Humans only — bots already have a
-   * free income stream through botBuy at every wave break, and a squadmate
-   * hoovering a rare full refill it did not need is the one way this feature
-   * makes the game worse. A player who cannot use the crate leaves it standing,
-   * exactly as ZombieRoom.buy refuses a heal at full health.
+   * Hand a crate to anyone standing on it. Humans only, and the reason is
+   * scarcity rather than bot income: two crates a wave to a cap of four, so a
+   * crate a squadmate takes is one you did not get.
+   *
+   * Ammo crates are the sharper case. A bot's reserve never drains (see
+   * `Room.finishReload`), but `ammoFull` reads false the moment its magazine is
+   * short — so a bot mid-mag would eat a crate to top up a magazine it reloads
+   * for free seconds later. Health is covered too: `BOT_HEALS_PER_WAVE` is what
+   * a hurt bot spends, not the floor loot.
+   *
+   * A player who cannot use the crate leaves it standing, exactly as
+   * ZombieRoom.buy refuses a heal at full health.
    */
   collectPickups(): void {
     if (!this.pickups.size) return;
@@ -263,6 +332,7 @@ export class ZombieRoom extends Room {
     // yourself from one you were carried through (see recordWave).
     for (const p of this.players.values()) {
       if (p.profileId) recordWave(p.profileId, n, p.earning);
+      if (p.bot) p.botHeals = BOT_HEALS_PER_WAVE;
     }
     this.toSpawn = this.compose(n);
     this.spawnT = 0;
@@ -282,24 +352,10 @@ export class ZombieRoom extends Room {
         p.protectT = SPAWN_PROTECT_MS / 1000;
         this.event({ e: 'revive', id: p.id });
       }
-      if (p.bot) this.botBuy(p);
     }
     this.state = 'break';
     this.breakT = WAVE_BREAK_MS / 1000;
     this.event({ e: 'break', next: this.wave + 1, bonus });
-  }
-
-  botBuy(p: Player): void {
-    if (p.hp < 55 && p.points >= SHOP.health.cost) { this.buy(p, 'health'); }
-    const cur = p.slots[p.slots.length - 1];
-    const idx = BOT_BUY_ORDER.indexOf(cur);
-    const next = BOT_BUY_ORDER[idx + 1] || (cur === 'pistol' ? 'smg' : null);
-    const target = cur === 'pistol' ? 'smg' : next;
-    // No ammo row for bots: their reserve never drains (see Room.finishReload),
-    // so a purchase gated on "reserve is low" could never fire, and the margin
-    // this line used to hold back for it was cash kept for nothing. Everything
-    // goes into guns now, which reaches the next weapon a wave or so earlier.
-    if (target && p.points >= SHOP[target as ShopItemId].cost) this.buy(p, target);
   }
 
   // ---- zombies ----
@@ -341,6 +397,29 @@ export class ZombieRoom extends Room {
     this.damageZombie(tgt.ref, dmg, shooter, hx, hy);
   }
 
+  /**
+   * Spend a bot's heal charge when a hit leaves it hurt. Two rules:
+   *
+   * Survivors only — a charge never undoes a death, so nothing about
+   * `onPlayerDeath`, the squad-wipe scan, `respawnT` or the death counter has to
+   * account for this at all. And only when damage actually landed: `super`
+   * returns early for a dead or spawn-protected victim, and a charge burned on a
+   * hit that never connected would be free health.
+   *
+   * Silent by design. A human squadmate buying `SHOP.health` mid-wave already
+   * snaps their bar to full with no event — `buy` is filtered to own id — so a
+   * bot doing the same is the picture the game already draws.
+   */
+  override damagePlayer(victim: Player, dmg: number, shooter: Player | null, weaponId: string, hx: number, hy: number): void {
+    const before = victim.hp;
+    super.damagePlayer(victim, dmg, shooter, weaponId, hx, hy);
+    if (!victim.bot || !victim.alive || victim.hp >= before) return;
+    if (victim.hp < BOT_HEAL_AT && victim.botHeals > 0) {
+      victim.botHeals--;
+      victim.hp = PLAYER_HP;
+    }
+  }
+
   override onPlayerDeath(victim: Player, _killer: Player | null): void {
     victim.respawnT = 0; // dead until wave ends
     let anyAlive = false;
@@ -359,9 +438,7 @@ export class ZombieRoom extends Room {
     this.toSpawn = [];
     this.wave = this.checkpoint > 0 ? this.checkpoint - 1 : 0; // resume at the checkpoint wave
     for (const p of this.players.values()) {
-      p.slots = ['pistol'];
-      p.ammo = { pistol: makeAmmo('pistol') };
-      p.slot = 0;
+      this.armLoadout(p); // re-rolls each bot: a new run is a new squad
       p.points = checkpointPoints(this.checkpoint);
       p.kills = 0; p.deaths = 0; p.damageDealt = 0;
       this.spawnAt(p, this.bestSpawn(this.grid.survivorSpawns, []));

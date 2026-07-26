@@ -33,6 +33,12 @@ export interface Player {
   kills: number; deaths: number; points: number; damageDealt: number;
   joinedAt: number;
   botCtl: BotController | null; // bot controller state, set for bots
+  /**
+   * Outbreak-only, bots only: free full heals left this wave. Refilled by
+   * `ZombieRoom.startWave`, spent on the damage path. Server-side and never
+   * snapshotted — like `points`, a field only one mode reads.
+   */
+  botHeals: number;
   // ---- persistence (server-only; never snapshotted) ----
   /**
    * Persistent profile this human is playing as, or null. Null for every bot,
@@ -69,7 +75,7 @@ export function createPlayer(
     lastSeq: 0, inputQueue: [], inputBudget: 0, lastRt: 0,
     kills: 0, deaths: 0, points: 0, damageDealt: 0,
     joinedAt: Date.now(),
-    botCtl: null,
+    botCtl: null, botHeals: 0,
     profileId: null, earning: false, bankedKills: 0, bankedDeaths: 0,
   };
 }
