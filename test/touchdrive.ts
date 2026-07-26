@@ -914,4 +914,91 @@ check(await page.evaluate(`getComputedStyle(document.documentElement).getPropert
 check(page.errors.length === 0, `no uncaught page exceptions (${page.errors.length})`);
 for (const e of page.errors) console.error('   ', e);
 
+// ---- the tilemap draws no grid lines (measured on the GPU) ----
+//
+// The one art invariant that needs a real GPU: it is a property of texture
+// SAMPLING, so neither Canvas2D nor the scene graph can see it. A tile sprite
+// lands on a fractional device pixel whenever the camera does, the GPU then
+// bilinear-samples the atlas frame's border, and WebGL clamps to the edge of the
+// texture SOURCE rather than of the frame — so without the bleed baked around
+// each cell (see bakeTiles) the sample reaches into empty gutter and every tile
+// boundary is drawn at part alpha. Measured before the fix: 143/255 at a 0.37px
+// offset, 64/255 at 0.5px, the boundary column at half the floor's brightness.
+//
+// It shipped invisible because the lightmap is a multiply: a seam and the tile
+// beside it are scaled by the same factor, so a dark ambient hid the difference
+// and a muzzle flash lighting the floor was what put the grid on screen — which
+// is to say the bug was reported as a lighting artefact and is nothing of the
+// kind. Hence checking alpha at fractional offsets rather than eyeballing a
+// screenshot.
+//
+// **Last in the file on purpose.** It builds a second WebGL renderer, which under
+// swiftshader costs seconds — run earlier it ate enough of the 10s pre-wave break
+// that the auto-fire pass found the wave already started and lost the one moment
+// the map is provably empty. Nothing follows it, so what it costs is nobody's.
+console.log('tilemap seam (measured on the GPU)');
+{
+  interface SeamProbe { offsets: [number, number][]; err?: string }
+  const seam = await page.evaluate<SeamProbe>(`(async () => {
+    const pixi = await import('/vendor/pixi.min.mjs');
+    const maps = await import('/shared/maps.ts');
+    const ts = await import('/client/js/gfx/tileset.ts');
+    const C = await import('/shared/constants.ts');
+    const { GfxTextures } = await import('/client/js/gfx/textures.ts');
+    const grid = maps.buildMap('outbreak');
+    const tx = new GfxTextures();
+    await tx.bake(grid);
+    const W = 200, H = 200;
+    let renderer;
+    try {
+      renderer = await pixi.autoDetectRenderer({
+        width: W, height: H, antialias: false, resolution: 1, preference: 'webgl',
+      });
+    } catch (e) { return { offsets: [], err: String(e) }; }
+
+    // A patch of one floor material, tiled exactly as scene.ts tiles it.
+    const key = ts.floorKey(Number(Object.keys(ts.FLOOR_ART)[0]), 0);
+    const offsets = [];
+    for (const off of [0, 0.37, 0.5]) {
+      const stage = new pixi.Container();
+      const inner = new pixi.Container();
+      stage.addChild(inner);
+      for (let ty = 0; ty < 4; ty++) {
+        for (let tx0 = 0; tx0 < 4; tx0++) {
+          const s = tx.sprite(key);
+          s.position.set(tx0 * C.TILE, ty * C.TILE);
+          s.scale.set(1 / ts.TILE_SS);
+          inner.addChild(s);
+        }
+      }
+      inner.position.set(off, off);   // a camera on a fractional pixel
+      const rt = pixi.RenderTexture.create({ width: W, height: H });
+      renderer.render({ container: stage, target: rt, clear: true });
+      const px = renderer.extract.pixels({ target: rt });
+      const d = px.pixels;
+      let minA = 255;
+      // Well inside the patch, so the outer edge (which legitimately does
+      // feather against nothing) is not what gets measured.
+      for (let y = 6; y < 4 * C.TILE - 6; y++) {
+        for (let x = 6; x < 4 * C.TILE - 6; x++) {
+          const a = d[(y * px.width + x) * 4 + 3];
+          if (a < minA) minA = a;
+        }
+      }
+      offsets.push([off, minA]);
+      rt.destroy(true);
+    }
+    renderer.destroy();
+    return { offsets };
+  })()`);
+  if (seam.err) console.log('  (no WebGL in this browser — skipped:', seam.err, ')');
+  else {
+    check(seam.offsets.length === 3, 'seam probe rendered at three sub-pixel offsets');
+    for (const [off, a] of seam.offsets) {
+      check(a === 255, `no seam between tiles at a ${off}px camera offset (min alpha ${a}/255)`);
+    }
+  }
+}
+
+
 done();

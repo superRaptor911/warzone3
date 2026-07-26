@@ -273,7 +273,10 @@ function bakeTiles(sheet: HTMLImageElement): Atlas {
   const x = c.getContext('2d')!;
   x.imageSmoothingEnabled = true;
   x.imageSmoothingQuality = 'high';
-  const PAD = 2;
+  // PAD is gutter, BLEED is how much of the cell is copied into it. A cell pitch
+  // of CELL + PAD = 100 still fits 20 per row and 10 rows in 2048x1024, so the
+  // 200-cell capacity above is unchanged.
+  const PAD = 4, BLEED = 2;
   let cx = PAD, cy = PAD;
   const pending: { key: string; rect: Rectangle; ax: number; ay: number }[] = [];
   const cell = (key: string, ax: number, ay: number,
@@ -284,9 +287,45 @@ function bakeTiles(sheet: HTMLImageElement): Atlas {
     x.translate(cx, cy);
     draw(x);
     x.restore();
+    extrude(x, cx, cy);
     pending.push({ key, rect: new Rectangle(cx, cy, CELL, CELL), ax, ay });
     cx += CELL + PAD;
   };
+
+  /**
+   * Copies each cell's outermost row/column outwards into the gutter.
+   *
+   * **This is what stops the tilemap drawing grid lines.** A tile sprite lands on
+   * a fractional device pixel whenever the camera does (i.e. almost always), so
+   * the GPU samples the frame's border with bilinear filtering, and WebGL clamps
+   * to the edge of the *texture source*, not of the frame — so the sample reaches
+   * into the gutter. Empty gutter means a partly transparent edge: measured at
+   * 143/255 alpha at a 0.37px offset and 64/255 at 0.5px, i.e. the boundary
+   * column of every tile rendered at ~half brightness. Dark-on-dark under the
+   * lightmap, which is why it only showed when a muzzle flash lit the floor —
+   * the multiply composite scales the seam and the tile by the same factor, so
+   * the brighter the light, the wider the gap between them.
+   *
+   * With the border duplicated, that same sample blends a texel with a copy of
+   * itself and the seam is gone by construction rather than by rounding
+   * positions (rounding would make adjacent tiles round apart and leave real
+   * gaps). BLEED of 2 is one texel more than bilinear can reach, so it also
+   * covers minification on a phone.
+   *
+   * Rows first, then columns over the already-extended height — that is what
+   * fills the corners without a separate pass.
+   */
+  function extrude(g: CanvasRenderingContext2D, ox: number, oy: number): void {
+    for (let i = 1; i <= BLEED; i++) {
+      g.drawImage(c, ox, oy, CELL, 1, ox, oy - i, CELL, 1);
+      g.drawImage(c, ox, oy + CELL - 1, CELL, 1, ox, oy + CELL - 1 + i, CELL, 1);
+    }
+    const top = oy - BLEED, h = CELL + BLEED * 2;
+    for (let i = 1; i <= BLEED; i++) {
+      g.drawImage(c, ox, top, 1, h, ox - i, top, 1, h);
+      g.drawImage(c, ox + CELL - 1, top, 1, h, ox + CELL - 1 + i, top, 1, h);
+    }
+  }
 
   // Floors: anchored top-left, since a tile sprite is positioned at its corner.
   // Variant count comes from floorVariants, not the cell list — a material can
