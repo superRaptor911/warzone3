@@ -212,7 +212,10 @@ await page.send('Page.addScriptToEvaluateOnNewDocument', {
 await page.viewport(844, 390, true);
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
-check(await page.waitFor(`!!document.querySelector('#loadout-opts .wicon')`), 'client module booted');
+// The boot probe must be something main.ts *writes*, not markup index.html
+// already ships, or it passes on a page whose module never ran. `.sel` on the
+// bots row is applied at module scope from the stored preset.
+check(await page.waitFor(`!!document.querySelector('#bots-opts button.sel')`), 'client module booted');
 
 check(await page.evaluate(`document.body.classList.contains('touch')`), 'touch mode applies from the menu setting');
 check(await page.evaluate(`getComputedStyle(document.getElementById('touch')).display === 'none'`),
@@ -379,7 +382,7 @@ const joinOutbreak = async (): Promise<boolean> => {
 
 await page.viewport(390, 844, true); // a phone opens the page in portrait...
 await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
-check(await page.waitFor(`!!document.querySelector('#loadout-opts .wicon')`), 'reloaded portrait for a cold first join');
+check(await page.waitFor(`!!document.querySelector('#bots-opts button.sel')`), 'reloaded portrait for a cold first join');
 const errorsBefore = page.errors.length;
 await page.evaluate(`document.querySelector('.mode-card[data-mode="zombie"]').click()`);
 await sleep(150);
@@ -490,7 +493,7 @@ await page.send('Page.addScriptToEvaluateOnNewDocument', {
 await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
 await page.viewport(1920, 1080, false);
 await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
-check(await page.waitFor(`!!document.querySelector('#loadout-opts .wicon')`), 'client module booted');
+check(await page.waitFor(`!!document.querySelector('#bots-opts button.sel')`), 'client module booted');
 
 check(!(await page.evaluate(`document.body.classList.contains('touch')`)), 'touch mode off on a fine pointer');
 check(await page.evaluate(`getComputedStyle(document.getElementById('touch')).display === 'none'`), 'no pads rendered');

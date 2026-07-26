@@ -295,10 +295,11 @@ export class ZombieRoom extends Room {
     const idx = BOT_BUY_ORDER.indexOf(cur);
     const next = BOT_BUY_ORDER[idx + 1] || (cur === 'pistol' ? 'smg' : null);
     const target = cur === 'pistol' ? 'smg' : next;
-    if (target && p.points >= SHOP[target as ShopItemId].cost + 150) this.buy(p, target);
-    const ammo = p.ammo[p.slots[p.slots.length - 1]]!;
-    const low = ammo.reserve < 20;
-    if (low && p.points >= SHOP.ammo.cost) this.buy(p, 'ammo');
+    // No ammo row for bots: their reserve never drains (see Room.finishReload),
+    // so a purchase gated on "reserve is low" could never fire, and the margin
+    // this line used to hold back for it was cash kept for nothing. Everything
+    // goes into guns now, which reaches the next weapon a wave or so earlier.
+    if (target && p.points >= SHOP[target as ShopItemId].cost) this.buy(p, target);
   }
 
   // ---- zombies ----

@@ -389,6 +389,48 @@ console.log('reload mirror');
   check(!r4.active && tickReload(r4, 0, dt) === 0, 'cancel drops the mirror to the server value');
 }
 
+// ---- bots never spend reserve, but still reload ----
+// The point is the "but": a bot with a bottomless magazine would stop reloading
+// altogether, which is a visible and audible change to how it fights. Only the
+// reserve is free, so every other cost stays — the mag empties on the same
+// round and the reload takes the same reloadMs.
+console.log('bot infinite reserve');
+{
+  const room = new TDMRoom('t-ammo');
+  const bot = room.addPlayer({ name: 'B', bot: true, team: TEAM.RED, primary: 'rifle' })!;
+  const human = room.addPlayer({ name: 'H', bot: false, team: TEAM.BLUE, primary: 'rifle' })!;
+  const w = WEAPONS.rifle;
+  const drain = (p: typeof bot): number => {
+    const ammo = p.ammo.rifle!;
+    // empty the mag, reload, repeat — twice as many times as the reserve holds
+    for (let i = 0; i < (w.reserve / w.mag) * 2; i++) {
+      ammo.mag = 0;
+      room.startReload(p);
+      room.finishReload(p);
+    }
+    return ammo.reserve;
+  };
+
+  check(bot.slots[1] === 'rifle' && human.slots[1] === 'rifle', 'both carry a rifle');
+  bot.slot = 1; human.slot = 1;
+
+  check(drain(human) === 0, 'a human runs the reserve dry');
+  check(human.ammo.rifle!.mag === 0, 'and is then stuck with an empty gun');
+
+  check(drain(bot) === w.reserve, 'a bot doing the same still has a full reserve');
+  check(bot.ammo.rifle!.mag === w.mag, 'and a full magazine every time');
+
+  // the reload is real, not skipped: reloadT is set and the mag stays empty
+  // until it elapses, which is what keeps a bot's rate of fire honest
+  bot.ammo.rifle!.mag = 0;
+  room.startReload(bot);
+  check(bot.reloadT === w.reloadMs / 1000 && bot.ammo.rifle!.mag === 0,
+    'a bot reload takes the weapon\'s full reload time');
+  check(room.events.some(e => e.e === 'reload' && e.id === bot.id),
+    'and is announced, so it looks and sounds like any other reload');
+  room.destroy();
+}
+
 // ---- switch lockout reaches the client ----
 // The local gun mirror gates firing on self.sw. Without it, a client at high
 // ping keeps firing through the 350ms switch lockout and emits tracers the

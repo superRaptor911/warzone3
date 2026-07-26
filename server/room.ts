@@ -395,7 +395,15 @@ export class Room {
     const need = w.mag - ammo.mag;
     const take = Math.min(need, ammo.reserve);
     ammo.mag += take;
-    ammo.reserve -= take;
+    // Bots never spend reserve, so they reload forever but never dry out. This
+    // is the whole of "infinite bot ammo": the mag still empties and the reload
+    // still takes reloadMs, so nothing about how a bot fights changes — only
+    // that it cannot end up standing in a firefight with an empty gun, which is
+    // a state no human ever has to accept (they can walk to a crate or a shop).
+    // Gated on p.bot rather than a flag: being a bot *is* the reason, and a
+    // flag is one edit away from being handed to a human. Ammo only ships in
+    // the per-client `self` block, so this is invisible on the wire.
+    if (!p.bot) ammo.reserve -= take;
   }
 
   trySwitch(p: Player, slot: number): void {

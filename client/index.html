@@ -59,16 +59,12 @@
         </button>
       </div>
 
+      <!-- There is deliberately no loadout row here. It only ever applied to
+           skirmish (ZombieRoom hands out a pistol and overwrites the join's
+           choice), so in a list of global settings it lied to half the players.
+           Skirmish loadout is now picked in the match, on the respawn screen,
+           and the pick is remembered as your starting gun. -->
       <div class="settings">
-        <div class="set-row" id="loadout-row">
-          <span class="loadout-label">loadout</span>
-          <div id="loadout-opts">
-            <button data-w="rifle" class="sel">AR-7</button>
-            <button data-w="smg">SMG</button>
-            <button data-w="shotgun">M870</button>
-            <button data-w="sniper">LR-50</button>
-          </div>
-        </div>
         <div class="set-row" id="gfx-row">
           <span class="loadout-label">graphics</span>
           <div id="gfx-opts">

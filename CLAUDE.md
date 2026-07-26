@@ -66,6 +66,7 @@ Client-side, `client/js/state.ts` (`simStep`) mirrors server `applyInput` moveme
 - **Supply crates are Outbreak-only floor loot** (`Pickup` in `entities.ts`, placed and collected in `zombie.ts`). They carry the shop's own two effects at full strength — `refillAmmo` and a full heal — so scarcity is the entire balance: `PICKUPS_PER_WAVE` (2) placed at each `startWave` on random floor tiles at least `PICKUP_SPAWN_CLEAR` (400px) from every survivor spawn, accumulating to `MAX_PICKUPS` (4) because uncollected ones persist, and cleared by `resetGame`. The spot pool is precomputed in the constructor, like TDM's `openLeft/openRight`. **Humans only**: bots walk over them, since a squadmate spending a rare full refill it did not need is the one way the feature makes the game worse, and bots already buy at every wave break. A player who cannot use one leaves it standing (full health, full ammo) — the same silence-means-refusal shape as `buy`, which is why the `pick` event *is* the confirmation. Collection runs in every room state, so looting during the break is the reward for leaving the compound. Code says `pickup`, never `crate`: `shared/maps.ts` already has `T_CRATE` tiles, which are cover.
 - `zombie.ts` — wave composition/scaling, zombie AI (direct steer on LOS else A*), shop, revive-on-wave-clear, squad-wipe reset, and **frenzy**: remaining ≤3 zombies or waveAge >75s ramps `z.effSpeed` above player walk speed (anti-kiting, paired with sprint stamina).
 - `bot.ts` — bots are not special-cased in the sim: `botThink` emits the same input objects a client would send (`BotInput`), processed through the same pipeline. Skill knobs are `errBase`/`reaction` in `createBotController`.
+- **Bots have infinite reserve but still reload.** The single exemption is in `Room.finishReload`: `if (!p.bot) ammo.reserve -= take`. Everything else about a bot's gun is unchanged — the mag still empties on the same round and the reload still costs the full `reloadMs`, so the reload is visible and audible exactly as a human's is; a bottomless *magazine* would have changed how a bot fights. Gated on `p.bot` rather than a flag, because being a bot is the actual reason and a flag is one edit from reaching a human. It is invisible on the wire (ammo only ships in the per-client `self` block), and it is why `botBuy` has no ammo row — a purchase gated on "reserve is low" could never fire.
 - `entities.ts` — `Player`/`Zombie` interfaces and factories; `index.ts` — static serving (with on-the-fly type stripping), ws join/matchmaking (first room of the mode with human capacity), message routing. Wire input is parsed as `any` and validated where consumed. Rooms are destroyed when the last human leaves; bots never keep a room alive.
 
 ### Client (`client/js/`)
@@ -210,6 +211,18 @@ is already the damage indicator.
   armory emits a compatibility `click` milliseconds later at the same point, by
   which time the panel is under the finger: on a phone that bought whatever row
   landed there.
+- **The skirmish loadout is chosen on the respawn screen, and nowhere else.**
+  There is no menu control: `setPrimary` in `main.ts` is the only writer of
+  `wz3-primary`, so your gun is set by equipping one and it carries into every
+  later match. Both call sites (the `#center-msg` taps and keys 1–4) are
+  reachable only while dead, and that is load-bearing rather than incidental —
+  the server's `primary` handler applies the weapon **immediately, with a full
+  mag and a full reserve**. A living player who could reach it would have free
+  infinite ammo by equipping and re-equipping. Never surface it in pause or any
+  other panel without first making `primary` queue for the next spawn. It was
+  removed from the menu because it only ever applied to skirmish — `ZombieRoom`
+  hands out a pistol and overwrites the join's choice — so in a list of global
+  settings it lied to half the players.
 - **On touch the armory and scoreboard are top-anchored, not centred.** A
   landscape phone is ~390px tall; centred, each panel covers the very control
   that toggles it (the ARMORY button, the score bar). Sizes in the

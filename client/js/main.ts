@@ -28,6 +28,8 @@ const fx = new Fx();
 let grid!: Grid, state!: GameState, renderer!: Renderer, hud!: Hud;
 let myId = 0, mode: GameMode = 'tdm', myName = 'Player';
 let seq = 0, lastFrame = 0, running = false, bootSeq = 0;
+// The skirmish primary you spawn with. There is no menu control for it: you set
+// it by equipping one in a match (see setPrimary), and it sticks from then on.
 let chosenPrimary = localStorage.getItem('wz3-primary') || 'rifle';
 // Persistent profile. The token is the only thing kept locally: the wave you
 // resume at, your callsign and your lifetime stats all live server-side now, so
@@ -81,17 +83,6 @@ const CROSS_DIST = 200;
 // ---------- menu ----------
 const nameInput = $('name-input') as HTMLInputElement;
 nameInput.value = localStorage.getItem('wz3-name') || '';
-for (const b of document.querySelectorAll<HTMLButtonElement>('#loadout-opts button')) {
-  b.innerHTML = weaponIconHtml(b.dataset.w as WeaponId) + b.innerHTML;
-  if (b.dataset.w === chosenPrimary) b.classList.add('sel');
-  else if (chosenPrimary === 'rifle' && b.dataset.w === 'rifle') b.classList.add('sel');
-  b.onclick = () => {
-    document.querySelectorAll('#loadout-opts button').forEach(x => x.classList.remove('sel'));
-    b.classList.add('sel');
-    chosenPrimary = b.dataset.w!;
-    localStorage.setItem('wz3-primary', chosenPrimary);
-  };
-}
 // touch controls: follow the device by default, overridable from the menu
 const storedT = localStorage.getItem('wz3-touch');
 let touchMode: TouchMode = storedT === 'on' || storedT === 'off' ? storedT : 'auto';
@@ -146,15 +137,32 @@ $('topbar').addEventListener('pointerdown', (e) => {
   scoresOpen = !scoresOpen;
 });
 
-// TDM death screen: the desktop 1-4 loadout keys as tap targets (delegated,
+/**
+ * Equip a skirmish primary and make it the gun you spawn with from now on.
+ * The menu has no loadout control, so this is the *only* writer of
+ * `wz3-primary` — which is what stops "loadout lives in the match" from meaning
+ * "every match starts on the rifle default forever".
+ *
+ * Both call sites (the respawn-screen taps and keys 1-4) are reachable only
+ * while dead, and that is load-bearing rather than incidental: the server
+ * applies `primary` immediately with a full mag *and* a full reserve, so a
+ * living player who could reach this would have free infinite ammo — equip,
+ * re-equip, topped up. Keep it dead-only.
+ */
+function setPrimary(wname: WeaponId): void {
+  chosenPrimary = wname;
+  localStorage.setItem('wz3-primary', wname);
+  net.send({ t: 'primary', w: wname });
+  hud.banner(WEAPONS[wname].name.toUpperCase() + ' EQUIPPED', 1200);
+}
+
+// TDM respawn screen: the desktop 1-4 loadout keys as tap targets (delegated,
 // because centerMsg rewrites the overlay whenever its text changes)
 $('center-msg').addEventListener('pointerdown', (e) => {
   const b = (e.target as HTMLElement).closest('[data-loadout]') as HTMLElement | null;
   if (!b) return;
   e.preventDefault();
-  const wname = b.dataset.loadout as WeaponId;
-  net.send({ t: 'primary', w: wname });
-  hud.banner(WEAPONS[wname].name.toUpperCase() + ' EQUIPPED', 1200);
+  setPrimary(b.dataset.loadout as WeaponId);
 });
 
 // graphics tier picker — applied when the next match boots its Renderer
@@ -761,10 +769,7 @@ function loop(t: number): void {
     }
   } else if (mode === 'tdm') {
     PRIMARIES.forEach((wname, i) => {
-      if (input.consume(String(i + 1))) {
-        net.send({ t: 'primary', w: wname });
-        hud.banner(WEAPONS[wname].name.toUpperCase() + ' EQUIPPED', 1200);
-      }
+      if (input.consume(String(i + 1))) setPrimary(wname);
     });
   }
 
@@ -829,9 +834,12 @@ function updateCenterMsg(snap: Snapshot, self: SelfSnap, meSnap: PlayerSnap): vo
   } else if (!meSnap.alive) {
     if (mode === 'tdm') {
       // the keyboard hint and the tap targets are the same four choices; CSS
-      // shows exactly one of them (.kbd-only / .cm-btns)
+      // shows exactly one of them (.kbd-only / .cm-btns). The equipped one is
+      // marked because this screen is where a loadout is chosen now — desktop
+      // reads it off #weapon-slots in the topbar instead.
       const btns = PRIMARIES.map(wn =>
-        `<button data-loadout="${wn}">${esc(WEAPONS[wn].name)}</button>`).join('');
+        `<button data-loadout="${wn}"${self.slots[1] === wn ? ' class="sel"' : ''}>` +
+        `${weaponIconHtml(wn)}${esc(WEAPONS[wn].name)}</button>`).join('');
       hud.centerMsg(`<div class="big" style="color:#e8a53f">RESPAWN IN ${Math.ceil(self.respawnT)}</div>` +
         `<div class="sub kbd-only">switch loadout: 1 SMG · 2 AR-7 · 3 M870 · 4 LR-50</div>` +
         `<div class="cm-btns">${btns}</div>`);
