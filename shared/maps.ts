@@ -79,9 +79,9 @@ export const MAT = {
 // asphalt beneath it, and a mat byte can only name one material, so folding the
 // two together would either lose the floor or need a combined id per pairing.
 //
-// Nothing renders these yet (phase 3 draws them above `actors` and x-rays what
-// they hide, see tasks/WORLD-ART.md). They are authored now so that neither map
-// has to be laid out twice.
+// The client draws them above `actors` and x-rays whoever they hide — occlusion
+// in a fixed top-down camera is not view-dependent, so the x-ray is what keeps
+// them legal rather than what makes them pretty (see tasks/WORLD-ART.md).
 export const OVER = {
   NONE: 0,
   AWNING: 1,    // timber loading-dock / shopfront awning, autotiled as a 9-slice
@@ -92,12 +92,12 @@ export const OVER = {
 /**
  * Declared height of each overhead: the clearance under it, in world px.
  *
- * It is real data rather than decoration. Phase 3 draws overlapping overheads in
- * height order (a conduit crosses over a pipe, both cross over an awning), and
- * the occlusion test is "is anything above the actor at all", which is only a
- * safe question to ask because every declared clearance is well above head
- * height — nothing here is a knee-high obstacle that would need a body compared
- * against it.
+ * It is real data rather than decoration. The renderer draws overlapping
+ * overheads in height order (a conduit crosses over a pipe, both cross over an
+ * awning), and the occlusion test is "is anything above the actor at all", which
+ * is only a safe question to ask because every declared clearance is well above
+ * head height — nothing here is a knee-high obstacle that would need a body
+ * compared against it.
  */
 export const OVER_HEIGHT: Record<number, number> = {
   [OVER.AWNING]: 190,
@@ -657,7 +657,7 @@ function buildOutbreak(): Grid {
   crate(g, 21, 2, MAT.CRATE_GREEN); crate(g, 22, 31, MAT.CRATE_GREEN);
   crate(g, 2, 8, MAT.WORKBENCH); crate(g, 41, 25, MAT.WORKBENCH);
 
-  // ---- overheads. Authored now, drawn in phase 3.
+  // ---- overheads. Drawn above the actors, with an x-ray for whoever is under.
   //
   // A slab has to be at least two tiles each way (no piece of the 9-slice carries
   // both a north and a south edge), which is why the shop's awning includes the

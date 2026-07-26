@@ -36,7 +36,7 @@
 <div id="out"></div>
 
 <script type="module">
-import { BODY_KINDS, WALK_FRAMES, GUN_SPEC, drawBody, drawPickup, drawGun }
+import { BODY_KINDS, WALK_FRAMES, GUN_SPEC, drawBody, drawBodyFlat, drawPickup, drawGun }
   from '/js/gfx/art.ts';
 import { PICKUP_RADIUS, PLAYER_RADIUS, ZOMBIE_RADII } from '/shared/constants.ts';
 import { WEAPONS } from '/shared/weapons.ts';
@@ -74,13 +74,19 @@ function tintCanvas(grey, tint) {
   return c;
 }
 
-function bodyCanvas(kind, R, ph, tint, ring) {
+// `flat` draws the x-ray silhouette instead of the shaded frame: same shapes,
+// every painted pixel white, which is what an actor under an overhead is drawn
+// with (gfx/scene.ts). Worth having beside the ramp — the pair is the argument
+// that occluding props are legal, and the silhouette is the thing a player
+// actually shoots at while it is in use.
+function bodyCanvas(kind, R, ph, tint, ring, flat) {
   const size = Math.ceil(2 * R) + 10;
   const grey = document.createElement('canvas');
   grey.width = grey.height = size;
   const g = grey.getContext('2d');
   g.translate(size / 2, size / 2);
-  drawBody(g, kind, R, ph);
+  if (flat) drawBodyFlat(g, kind, R, ph, size);
+  else drawBody(g, kind, R, ph);
 
   const c = document.createElement('canvas');
   c.width = c.height = size;
@@ -153,6 +159,25 @@ function render() {
     box(bodyCanvas('player', PLAYER_RADIUS * Z, 0.25, '#3d6fc2', ring), 'blue'),
     box(bodyCanvas('player', PLAYER_RADIUS * Z, 0.25, '#4c9e5f', ring), 'survivor'),
   ]);
+
+  section('x-ray silhouettes — the same frames, flat',
+    'What an actor under an awning is drawn with, reparented above the overhead at 0.8 alpha. Flat rather '
+    + 'than a tint of the ramp on purpose: a shaded silhouette would give an occluded player the reading an '
+    + 'exposed one has, and the whole rule for occluding props is that the information delta is zero. Same '
+    + 'shape code, so it satisfies the radius invariant for the same reason the ramp does.');
+  for (const kind of BODY_KINDS) {
+    const label = document.createElement('div');
+    label.className = 'kind';
+    label.textContent = `${kind} · shaded vs flat`;
+    out.appendChild(label);
+    const nodes = [];
+    for (const f of [null, 0.25, 0.5, 0.75]) {
+      nodes.push(box(bodyCanvas(kind, RADIUS[kind] * Z, f, tinted && TINT[kind], ring, false),
+        f === null ? 'idle' : `walk ${Math.round(f * WALK_FRAMES)}`));
+      nodes.push(box(bodyCanvas(kind, RADIUS[kind] * Z, f, tinted && TINT[kind], ring, true), 'flat'));
+    }
+    row(nodes);
+  }
 
   section('rotation resample check',
     'Bodies bake at BODY_SS x on-screen size so arbitrary aim angles stay clean instead of aliasing.');

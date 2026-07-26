@@ -42,7 +42,14 @@
   </label>
   <label>tile px <input type="range" id="zoom" min="8" max="34" step="2" value="20"></label>
   <label><input type="checkbox" id="over" checked> overheads</label>
-  <label><input type="checkbox" id="indoor"> mark indoor</label>
+  <label><input type="checkbox" id="indoor"> mark roofed</label>
+  <label>ambient
+    <select id="ambient">
+      <option value="">off</option>
+      <option value="zombie">outbreak</option>
+      <option value="tdm">skirmish</option>
+    </select>
+  </label>
   <label><input type="checkbox" id="decor" checked> decor</label>
   <label><input type="checkbox" id="ao" checked> floor AO</label>
   <label><input type="checkbox" id="grid"> tile grid</label>
@@ -58,7 +65,9 @@ import {
 import {
   DEC, MAT, OVER, OVER_HEIGHT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId, matIndoor,
 } from '/shared/maps.ts';
-import { TILE } from '/shared/constants.ts';
+import { AMBIENT, indoorRects, indoorTiles } from '/js/gfx/ambient.ts';
+import { drawBody, drawBodyFlat } from '/js/gfx/art.ts';
+import { PLAYER_RADIUS, TILE } from '/shared/constants.ts';
 
 const sheet = await new Promise((res, rej) => {
   const i = new Image();
@@ -166,12 +175,15 @@ function drawMap(name, z) {
       else if (t === T_CRATE) at(tx, ty, gg => drawProp(gg, sheet, id));
     }
   }
-  // indoor flag: what phase 3's ambient split reads
+  // The roofed region exactly as the lightmap computes it — the authored
+  // MAT_INDOOR floors PLUS the walls and furniture indoorTiles() derives from
+  // them, which is the part worth being able to see.
   if ($('indoor').checked) {
+    const roof = indoorTiles(g0);
     g.fillStyle = 'rgba(40,90,255,0.20)';
     for (let ty = 0; ty < g0.h; ty++) {
       for (let tx = 0; tx < g0.w; tx++) {
-        if (matIndoor(g0.matAt(tx, ty))) g.fillRect(tx * z, ty * z, z, z);
+        if (roof[g0.idx(tx, ty)]) g.fillRect(tx * z, ty * z, z, z);
       }
     }
   }
@@ -186,6 +198,28 @@ function drawMap(name, z) {
         at(tx, ty, gg => drawOver(gg, sheet, o, overVariant(o, m)));
       }
     }
+  }
+  // The ambient floor, multiplied over everything drawn so far — the same
+  // composite gfx/lights.ts performs, minus the dynamic lights (there is no
+  // player here to carry one). This is the only way to look at the indoor/outdoor
+  // split as a whole map rather than as whatever fits on one screen in a match.
+  const mode = $('ambient').value;
+  if (mode) {
+    const amb = AMBIENT[mode];
+    const hex = v => '#' + v.toString(16).padStart(6, '0');
+    g.save();
+    g.globalCompositeOperation = 'multiply';
+    g.fillStyle = hex(amb.outdoor);
+    g.fillRect(0, 0, c.width, c.height);
+    // Re-multiplying the roof by indoor/outdoor gives the right result without
+    // needing to undo the pass above: the renderer replaces the ambient there,
+    // and (out * in/out) is (in).
+    const ratio = ch => Math.round(255 * (((amb.indoor >> ch) & 255) / ((amb.outdoor >> ch) & 255)));
+    g.fillStyle = `rgb(${ratio(16)},${ratio(8)},${ratio(0)})`;
+    for (const r of indoorRects(g0)) {
+      g.fillRect(r.x * z / TILE, r.y * z / TILE, r.w * z / TILE, r.h * z / TILE);
+    }
+    g.restore();
   }
   if ($('grid').checked) {
     g.strokeStyle = 'rgba(255,255,255,0.07)';
@@ -221,11 +255,15 @@ function stats(g0) {
     }
   }
   const pct = (100 * overFloor / floors);
+  const roofed = indoorTiles(g0).reduce((a, v) => a + v, 0);
   const t = document.createElement('table');
   const rows = [
     ['size', `${g0.w} x ${g0.h} tiles`],
     ['floor tiles', String(floors)],
     ['indoor floor', `${indoor} (${(100 * indoor / floors).toFixed(0)}%)`],
+    // the authored floors plus the walls and furniture derived from them: what
+    // the lightmap's indoor ambient actually covers
+    ['roofed tiles', `${roofed} (${(100 * roofed / (g0.w * g0.h)).toFixed(0)}% of the map)`],
     ['props', String(props)],
     ['decor', String(g0.decor.length)],
     ['overhead over floor', `${overFloor} — ${pct.toFixed(2)}% of floor, budget 3%`],
@@ -302,7 +340,7 @@ function drawCatalogue(z) {
       nameOf(DEC, f));
   }));
 
-  section('overheads — authored now, drawn above the actors in phase 3',
+  section('overheads — drawn above the actors, x-rayed below',
     'A slab autotiles as a 9-slice (so an awning of any size gets its own trim, and must be at least two '
     + 'tiles in each direction — the set has no piece with both a north and a south edge). A line has only '
     + 'the two straight pieces, so runs cannot turn. Height is the clearance underneath: it orders overlapping '
@@ -336,6 +374,62 @@ function drawCatalogue(z) {
     }
   }
   row([box(demo, 'overhead autotiling')]);
+
+  section('x-ray — what stops an overhead from hiding a player',
+    'The camera is fixed top-down, so occlusion is not view-dependent: an awning drawn over a tile hides '
+    + 'whoever is on it from all ten players at once, including one at 90&deg; with clear line of sight whose '
+    + 'shots still land. So the middle cell below is not a legal thing to ship. The right-hand one is what '
+    + 'the renderer does instead — the actor is reparented above the overhead and its body swapped for the '
+    + '<em>flat</em> bake of the same walk frame at ' + Math.round(100 * 0.8) + '% alpha. Flat is the point: '
+    + 'tinting the normal luminance ramp would give a player under a roof the shading an exposed one has.');
+  {
+    // The renderer tints greyscale bakes; multiply, masked back to the bake's own
+    // alpha, is what a Pixi sprite tint does.
+    const tint = (src, colour) => {
+      const c = document.createElement('canvas');
+      c.width = src.width; c.height = src.height;
+      const g = c.getContext('2d');
+      g.drawImage(src, 0, 0);
+      g.globalCompositeOperation = 'multiply';
+      g.fillStyle = colour;
+      g.fillRect(0, 0, c.width, c.height);
+      g.globalCompositeOperation = 'destination-in';
+      g.drawImage(src, 0, 0);
+      return c;
+    };
+    const bake = (px, flat) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = px;
+      const g = c.getContext('2d');
+      g.translate(px / 2, px / 2);
+      const R = px / 2 - 1;
+      if (flat) drawBodyFlat(g, 'player', R, 0.25, px);
+      else drawBody(g, 'player', R, 0.25);
+      return c;
+    };
+    // Blue team, matching TEAM_COLORS — inlined because that table lives in
+    // gfx/textures.ts, which imports Pixi and so cannot be imported here.
+    const body = tint(bake(160, false), '#3d6fc2');
+    const flat = tint(bake(160, true), '#3d6fc2');
+    const span = (2 * PLAYER_RADIUS / TILE) * CELL;   // the body's size in cell px
+    const put = (g, img, alpha) => {
+      g.globalAlpha = alpha;
+      g.drawImage(img, (CELL - span) / 2, (CELL - span) / 2, span, span);
+      g.globalAlpha = 1;
+    };
+    const awning = g => drawOver(g, sheet, OVER.AWNING, 4); // the 9-slice centre
+    row([
+      box(cellCanvas(96, g => { drawFloor(g, sheet, MAT.ASPHALT, 3); put(g, body, 1); }),
+        'in the open'),
+      box(cellCanvas(96, g => { drawFloor(g, sheet, MAT.ASPHALT, 3); put(g, body, 1); awning(g); }),
+        'occluded, no x-ray'),
+      box(cellCanvas(96, g => {
+        drawFloor(g, sheet, MAT.ASPHALT, 3); put(g, body, 1); awning(g); put(g, flat, 0.8);
+      }), 'occluded, x-rayed'),
+      box(cellCanvas(96, g => { drawFloor(g, sheet, MAT.ASPHALT, 3); put(g, flat, 1); }),
+        'the flat bake alone'),
+    ]);
+  }
 }
 
 function render() {
@@ -354,7 +448,7 @@ function render() {
 // The controls are also URL parameters (?map=outbreak&zoom=28&grid=1), so a
 // particular view can be linked, reloaded, or handed to a screenshot tool.
 const q = new URLSearchParams(location.search);
-for (const id of ['map', 'zoom', 'over', 'indoor', 'decor', 'ao', 'grid']) {
+for (const id of ['map', 'zoom', 'over', 'indoor', 'ambient', 'decor', 'ao', 'grid']) {
   const el = $(id);
   if (q.has(id)) {
     if (el.type === 'checkbox') el.checked = q.get(id) !== '0';

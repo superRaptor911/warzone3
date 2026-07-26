@@ -1,13 +1,28 @@
 import { Container, Sprite, Text } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters';
 import { PLAYER_RADIUS, TEAM, TILE } from '../../../shared/constants.ts';
-import { T_FLOOR, T_WALL, matId, type Grid } from '../../../shared/maps.ts';
+import {
+  OVER, OVER_HEIGHT, T_FLOOR, T_WALL, matId, type Grid,
+} from '../../../shared/maps.ts';
 import type { PickupSnap, PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
 import { DISC_R, GfxTextures, PICKUP_COLORS, TEAM_COLORS, ZTYPE, gunKey, pickupKey, ringKey } from './textures.ts';
-import { BODY_SS, GUN_SS, HEAD, PICKUP_SS, WALK_FRAMES, bodyKey, type BodyKind } from './art.ts';
 import {
-  TILE_SS, decorKey, floorKey, floorVariant, neighbourMask, propKey, shadeKey, wallKey,
+  BODY_SS, GUN_SS, HEAD, PICKUP_SS, WALK_FRAMES, bodyFlatKey, bodyKey, type BodyKind,
+} from './art.ts';
+import {
+  TILE_SS, decorKey, floorKey, floorVariant, neighbourMask, overKey, overVariant,
+  propKey, shadeKey, wallKey,
 } from './tileset.ts';
+
+/**
+ * How solid an x-rayed actor's silhouette is.
+ *
+ * Below 1 so the overhead it is standing under still reads through it — the
+ * point is "there is someone under the awning", not "the awning has a hole in
+ * it". High enough that the shape is unambiguous at a glance, because it is
+ * carrying the same information the unoccluded sprite would.
+ */
+const XRAY_ALPHA = 0.8;
 
 // Stage layer tree. Order is load-bearing (encodes the old painter's order):
 // world (lit, phase 2 darkens it) < light slot < worldFx (emissive/floats,
@@ -17,6 +32,8 @@ export interface Layers {
   ground: Container;   // map, decals (P4)
   under: Container;    // corpses
   actors: Container;   // zombies then players
+  overhead: Container; // awnings/pipes: tiles that hang above the actors
+  xray: Container;     // actors the overheads would otherwise hide
   fxTop: Container;    // sparks/blood (P4: shells/smoke ParticleContainers)
   lightSlot: Container; // P2 puts the multiply-blended lightmap sprite here
   worldFx: Container;
@@ -32,8 +49,17 @@ export function buildLayers(stage: Container, bloom: boolean): Layers {
   const ground = new Container();
   const under = new Container();
   const actors = new Container();
+  // Overheads draw over the actors — that is what makes them overheads — and the
+  // x-ray layer draws over the overheads, so an occluded actor is still visible.
+  // Both stay INSIDE `world`, under the lightmap: above it, a player under an
+  // awning would be brighter than one standing in the open, and that is an
+  // information gain rather than a redraw. fxTop is above both because sparks and
+  // blood are transient two-frame flecks, and losing them under a canopy would
+  // read as the hit not registering.
+  const overhead = new Container();
+  const xray = new Container();
   const fxTop = new Container();
-  world.addChild(ground, under, actors, fxTop);
+  world.addChild(ground, under, actors, overhead, xray, fxTop);
   const lightSlot = new Container();
   const worldFx = new Container();
   // Crates sit in worldFx beside the emissive layer rather than inside it, for
@@ -54,8 +80,8 @@ export function buildLayers(stage: Container, bloom: boolean): Layers {
   const minimap = new Container();
   stage.addChild(world, lightSlot, worldFx, screenUi, minimap);
   return {
-    world, ground, under, actors, fxTop, lightSlot, worldFx, pickups, emissive, floats,
-    screenUi, minimap,
+    world, ground, under, actors, overhead, xray, fxTop, lightSlot, worldFx, pickups,
+    emissive, floats, screenUi, minimap,
   };
 }
 
@@ -149,6 +175,42 @@ function buildTilemap(ground: Container, tx: GfxTextures, grid: Grid): void {
   ground.addChild(floors, shades, decors, solids);
 }
 
+/**
+ * The props that hang above the field, from `Grid.over`.
+ *
+ * Static sprites like the rest of the tilemap, and autotiled the same way — the
+ * only difference is which question the neighbour mask asks (`is my neighbour the
+ * same overhead` rather than `is it solid`) and which layer they land in.
+ *
+ * Grouped by id and added in ascending `OVER_HEIGHT` order, so where two runs
+ * meet the higher one crosses over: a conduit passes over a pipe, both pass over
+ * an awning. A tile holds one overhead id, so this can only matter where two runs
+ * are adjacent — but the clearances are real data, and letting the draw order
+ * disagree with them is how a pipe ends up threaded through a canopy.
+ */
+function buildOverheads(overhead: Container, tx: GfxTextures, grid: Grid): void {
+  const scale = 1 / TILE_SS;
+  const ids = Object.keys(OVER_HEIGHT).map(Number)
+    .sort((a, b) => OVER_HEIGHT[a] - OVER_HEIGHT[b]);
+  for (const id of ids) {
+    const same = (x: number, y: number): boolean => grid.overAt(x, y) === id;
+    const layer = new Container();
+    for (let ty = 0; ty < grid.h; ty++) {
+      for (let tx0 = 0; tx0 < grid.w; tx0++) {
+        if (grid.overAt(tx0, ty) !== id) continue;
+        const key = overKey(id, overVariant(id, neighbourMask(same, tx0, ty)));
+        if (!tx.has(key)) continue;
+        const s = tx.sprite(key);
+        s.position.set(tx0 * TILE, ty * TILE);
+        s.scale.set(scale);
+        layer.addChild(s);
+      }
+    }
+    if (layer.children.length) overhead.addChild(layer);
+    else layer.destroy();
+  }
+}
+
 function makeBar(tx: GfxTextures, w: number, y: number): { bg: Sprite; fg: Sprite } {
   const bg = tx.sprite('white');
   bg.anchor.set(0, 0);
@@ -206,6 +268,7 @@ class PlayerVisual {
   private weapon = '';
   private cycle = new WalkCycle();
   private frame: number | 'idle' | null = null;
+  private xray = false;
 
   constructor(tx: GfxTextures, textScale: number) {
     this.tx = tx;
@@ -240,7 +303,17 @@ class PlayerVisual {
     this.reload.scale.set(s);
   }
 
-  update(p: PlayerSnap, x: number, y: number, aim: number, isMe: boolean, now: number): void {
+  /**
+   * `xray` says this player is under an overhead, so the ONLY thing that changes
+   * is the body: the flat silhouette of the same walk frame, at the same team
+   * tint, slightly transparent. The edge ring, the spawn-protection ring, the
+   * gun, the aim dot, the name, the health bar and the reload label all draw
+   * exactly as they do in the open — an occluded player must be neither harder
+   * nor easier to read than an exposed one, which is the whole reason occluding
+   * props are allowed at all (see tasks/WORLD-ART.md).
+   */
+  update(p: PlayerSnap, x: number, y: number, aim: number, isMe: boolean, now: number,
+         xray: boolean): void {
     if (p.team !== this.team || isMe !== this.isMe) {
       this.team = p.team; this.isMe = isMe;
       const col = TEAM_COLORS[p.team] || TEAM_COLORS[TEAM.SURVIVOR];
@@ -258,9 +331,11 @@ class PlayerVisual {
     }
     if (this.name.text !== p.name) this.name.text = p.name;
     const f = this.cycle.frame(x, y);
-    if (f !== this.frame) {
-      this.frame = f;
-      this.body.texture = this.tx.entry(bodyKey('player', f)).tex;
+    if (f !== this.frame || xray !== this.xray) {
+      this.frame = f; this.xray = xray;
+      const key = xray ? bodyFlatKey('player', f) : bodyKey('player', f);
+      this.body.texture = this.tx.entry(key).tex;
+      this.body.alpha = xray ? XRAY_ALPHA : 1;
     }
     this.root.position.set(x, y);
     this.body.rotation = aim;
@@ -294,6 +369,7 @@ class ZombieVisual {
   private tx: GfxTextures;
   private cycle = new WalkCycle();
   private frame: number | 'idle' | null = null;
+  private xray = false;
 
   constructor(tx: GfxTextures, type: ZombieSnap['type']) {
     this.tx = tx;
@@ -324,13 +400,19 @@ class ZombieVisual {
       this.eyes[0], this.eyes[1], this.barBg, this.barFg);
   }
 
-  update(z: ZombieSnap, now: number): void {
+  // `xray` as for a player: the body goes flat, the frenzy ring, the eyes and the
+  // health bar are untouched. The eyes matter most here — they are the tell that
+  // something under the awning has noticed you, and they are a separate tint the
+  // flat body could not carry.
+  update(z: ZombieSnap, now: number, xray: boolean): void {
     const r = this.r;
     this.root.position.set(z.x, z.y);
     const f = this.cycle.frame(z.x, z.y);
-    if (f !== this.frame) {
-      this.frame = f;
-      this.body.texture = this.tx.entry(bodyKey(this.type, f)).tex;
+    if (f !== this.frame || xray !== this.xray) {
+      this.frame = f; this.xray = xray;
+      const key = xray ? bodyFlatKey(this.type, f) : bodyKey(this.type, f);
+      this.body.texture = this.tx.entry(key).tex;
+      this.body.alpha = xray ? XRAY_ALPHA : 1;
     }
     this.body.rotation = z.aim;
     this.fring.visible = !!z.fr;
@@ -356,6 +438,7 @@ class ZombieVisual {
 export class Scene {
   layers: Layers;
   private tx: GfxTextures;
+  private grid: Grid;
   private players = new Map<number, PlayerVisual>();
   private zombies = new Map<number, ZombieVisual>();
   private crates = new Map<number, Sprite>();
@@ -364,8 +447,42 @@ export class Scene {
 
   constructor(stage: Container, tx: GfxTextures, bloom: boolean, grid: Grid) {
     this.tx = tx;
+    this.grid = grid;
     this.layers = buildLayers(stage, bloom);
     buildTilemap(this.layers.ground, tx, grid);
+    buildOverheads(this.layers.overhead, tx, grid);
+  }
+
+  /**
+   * Is this actor under an overhead?
+   *
+   * One grid lookup on the tile the actor's centre is in: O(1) per actor per
+   * frame, no AABB against the sprite and no partial state, so an actor cannot
+   * flicker between occluded and not while standing on a boundary — it crosses
+   * once, at the tile edge. Deliberately not a test against `OVER_HEIGHT`: every
+   * declared clearance is far above head height (asserted in matchflow), so "is
+   * there anything above me" is the whole question.
+   *
+   * Note this is not view-dependent, and must not become so. The camera is fixed
+   * top-down, so an awning drawn over the tile north of it hides that player from
+   * every player at once — including one at 90° with clear line of sight whose
+   * shots still land. That is exactly why the x-ray exists.
+   */
+  private occluded(x: number, y: number): boolean {
+    return this.grid.overAt(Math.floor(x / TILE), Math.floor(y / TILE)) !== OVER.NONE;
+  }
+
+  /**
+   * Moves a visual between `actors` and `xray` when its occlusion changes, and
+   * only then — reparenting every frame would rebuild both layers' render groups
+   * for nothing. `front` keeps the actors convention: zombies at the front of the
+   * list so they draw under players, in either layer.
+   */
+  private place(root: Container, xray: boolean, front: boolean): void {
+    const to = xray ? this.layers.xray : this.layers.actors;
+    if (root.parent === to) return;
+    if (front) to.addChildAt(root, 0);
+    else to.addChild(root);
   }
 
   setTextScale(s: number): void {
@@ -388,7 +505,9 @@ export class Scene {
       v.root.visible = true;
       const isMe = p.id === myId;
       const x = isMe ? me.x : p.x, y = isMe ? me.y : p.y;
-      v.update(p, x, y, isMe ? me.aim : p.aim, isMe, now);
+      const xray = this.occluded(x, y);
+      v.update(p, x, y, isMe ? me.aim : p.aim, isMe, now, xray);
+      this.place(v.root, xray, false);
     }
     for (const [id, v] of this.players) {
       if (!this.seen.has(id)) { v.destroy(); this.players.delete(id); }
@@ -404,10 +523,11 @@ export class Scene {
       if (!v) {
         v = new ZombieVisual(this.tx, z.type);
         this.zombies.set(z.id, v);
-        // zombies render under players: keep them at the front of `actors`
-        this.layers.actors.addChildAt(v.root, 0);
       }
-      v.update(z, now);
+      const xray = this.occluded(z.x, z.y);
+      v.update(z, now, xray);
+      // zombies render under players: keep them at the front of their layer
+      this.place(v.root, xray, true);
     }
     for (const [id, v] of this.zombies) {
       if (!this.seen.has(id)) { v.destroy(); this.zombies.delete(id); }

@@ -5,6 +5,7 @@ import type { GfxTextures } from './textures.ts';
 import type { Layers } from './scene.ts';
 import type { DrawView } from './renderer.ts';
 import { syncPool } from './fxsync.ts';
+import { ambientFor, indoorRects } from './ambient.ts';
 
 // 2D lightmap: an offstage scene (ambient fill + additive light sprites) is
 // rendered into a screen-sized RenderTexture each frame, then composited over
@@ -17,8 +18,8 @@ import { syncPool } from './fxsync.ts';
 //   the information available to players.
 // - Zombie mode: darkness dims but never hides. Out-of-sight zombies stay
 //   rendered at the ambient floor; chevrons and minimap are unaffected.
-const AMBIENT_ZOMBIE = 0x2e3446;  // ~18% luminance floor — THE tuning knob
-const AMBIENT_TDM = 0xd9dce3;     // barely below neutral, mood only
+// - The ambient floor is two values, not one — see ambient.ts for the indoor
+//   split and why it is information-neutral.
 const N_RAYS = 128;
 const VIS_REACH = 460;            // visibility polygon radius (px)
 const WALL_SOAK = 30;             // extend rays so near wall faces catch light
@@ -32,6 +33,7 @@ export class Lights {
   private rt: RenderTexture;
   private root = new Container();        // offstage; rendered into rt
   private ambient: Sprite;
+  private indoor: Graphics;              // roofed tiles, in world space
   private world = new Container();       // mirrors the main world transform
   private visPoly = new Graphics();
   private playerLight: Sprite;
@@ -49,7 +51,19 @@ export class Lights {
 
     this.ambient = tx.sprite('white');
     this.ambient.anchor.set(0, 0);
-    this.root.addChild(this.ambient, this.world);
+
+    // The roofed region, filled white and tinted per mode. Order inside `root`
+    // is the whole of how the split works: the screen-wide ambient lays down the
+    // outdoor value, this replaces it wherever there is a roof (normal blend at
+    // full alpha, so it overwrites rather than multiplies), and the additive
+    // lights come after both — a lamp reaching indoors must still brighten it.
+    // Built once: the map is static for a match, so this is 29 rects (Outbreak)
+    // or 80 (Compound) uploaded on join and never touched again.
+    this.indoor = new Graphics();
+    for (const r of indoorRects(grid)) this.indoor.rect(r.x, r.y, r.w, r.h);
+    this.indoor.fill(0xffffff);
+
+    this.root.addChild(this.ambient, this.indoor, this.world);
 
     this.playerLight = this.lightSprite(PLAYER_LIGHT_R, 0xfff1dc, 0.95);
     this.playerLight.mask = this.visPoly;
@@ -97,8 +111,14 @@ export class Lights {
   update(view: DrawView, vw: number, vh: number, worldX: number, worldY: number, zoom: number): void {
     this.fit(vw, vh);
     const zombie = view.mode === 'zombie';
-    this.ambient.tint = zombie ? AMBIENT_ZOMBIE : AMBIENT_TDM;
+    const amb = ambientFor(view.mode);
+    this.ambient.tint = amb.outdoor;
     this.ambient.scale.set(vw / 8, vh / 8);
+    this.indoor.tint = amb.indoor;
+    // Same transform as `world`, so the roof mask lands on the tiles it was
+    // built from at any zoom.
+    this.indoor.position.set(worldX, worldY);
+    this.indoor.scale.set(zoom);
     this.world.position.set(worldX, worldY);
     this.world.scale.set(zoom);
 

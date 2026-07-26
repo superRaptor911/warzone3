@@ -34,6 +34,11 @@ export function bodyKey(kind: BodyKind, frame: number | 'idle'): string {
   return `body-${kind}-${frame}`;
 }
 
+/** The x-ray silhouette of the same frame — see `drawBodyFlat`. */
+export function bodyFlatKey(kind: BodyKind, frame: number | 'idle'): string {
+  return `flat-${kind}-${frame}`;
+}
+
 // ---- Outbreak supply crates ----
 // Named `pickup`, never `crate`, in code: shared/maps.ts already has T_CRATE
 // tiles, which are scenery you take cover behind rather than loot.
@@ -280,6 +285,35 @@ export function drawBody(g: Ctx, kind: BodyKind, R: number, ph: number | null): 
   paint();
   keyW = 0;
   paint();
+}
+
+/**
+ * The same frame as one flat shape: every painted pixel white, alpha untouched.
+ *
+ * This is what an occluded actor is drawn with (gfx/scene.ts reparents it above
+ * the overhead and tints it its team colour). It has to be its own bake rather
+ * than a tint of the normal frame because the normal frame is a luminance ramp:
+ * tinting that gives a shaded body, and a shaded body under a roof would carry
+ * *more* information than the exposed one beside it. Flat is the point.
+ *
+ * Made by compositing rather than by a second set of draw calls, so the
+ * silhouette is the same shape code and cannot drift from it — which also means
+ * the radius invariant it satisfies (nothing past R, keyline included) is
+ * inherited rather than re-argued. `source-atop` keeps the destination's alpha,
+ * so the anti-aliased rim survives; the clip is what confines both the composite
+ * and the fill to this atlas cell.
+ */
+export function drawBodyFlat(g: Ctx, kind: BodyKind, R: number, ph: number | null,
+                             size: number): void {
+  g.save();
+  g.beginPath();
+  g.rect(-size / 2, -size / 2, size, size);
+  g.clip();
+  drawBody(g, kind, R, ph);
+  g.globalCompositeOperation = 'source-atop';
+  g.fillStyle = '#fff';
+  g.fillRect(-size / 2, -size / 2, size, size);
+  g.restore();
 }
 
 // ---- weapons ----

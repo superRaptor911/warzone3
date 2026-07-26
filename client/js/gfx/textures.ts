@@ -6,12 +6,13 @@ import { WEAPONS, type WeaponId } from '../../../shared/weapons.ts';
 import type { PickupKind, ZombieTypeId } from '../../../shared/types.ts';
 import {
   BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, PICKUP_SS, WALK_FRAMES,
-  bodyKey, drawBody, drawPickup, drawGun, gunKey, pickupKey, type BodyKind,
+  bodyFlatKey, bodyKey, drawBody, drawBodyFlat, drawPickup, drawGun, gunKey,
+  pickupKey, type BodyKind,
 } from './art.ts';
 import {
-  CELL, DECOR_ART, FLOOR_ART, MASKS, PROP_ART, SHEET_URL, WALL_ART,
-  decorKey, drawDecor, drawFloor, drawProp, drawShade, drawWall,
-  floorKey, floorVariants, propKey, shadeKey, wallKey,
+  CELL, DECOR_ART, FLOOR_ART, MASKS, OVER_ART, PROP_ART, SHEET_URL, WALL_ART,
+  decorKey, drawDecor, drawFloor, drawOver, drawProp, drawShade, drawWall,
+  floorKey, floorVariants, overKey, overVariants, propKey, shadeKey, wallKey,
 } from './tileset.ts';
 
 export { gunKey, pickupKey };
@@ -169,8 +170,8 @@ let sharedTiles: Atlas | null = null;
 
 // All small shapes are baked into one 1024x1024 canvas atlas so every sprite
 // shares a single texture source (full batching) — 1024 because the body walk
-// frame sets (4 kinds x 5 frames, supersampled) overflow 512; 46 cells fill
-// ~29% of the 1024 height, leaving room for more frame sets. Shapes
+// frame sets (4 kinds x 5 frames, supersampled, now doubled by the x-ray
+// silhouettes) overflow 512; measured, the pack now reaches y=383 of 1024. Shapes
 // that vary by team or zombie type are baked white/greyscale and tinted at
 // runtime — this is also the spritesheet contract for real art (see
 // tryLoadArtAtlas).
@@ -216,6 +217,10 @@ export class GfxTextures {
   //  - body frames are `body-<player|walker|runner|brute>-<0..3|idle>`, drawn
   //    facing +x, centred, and are TINTED at runtime — paint them as greyscale
   //    luminance ramps (white = full team/type colour), not in final colours.
+  //  - `flat-<kind>-<frame>` is the same frame as the x-ray silhouette an
+  //    occluded actor is drawn with: identical alpha, but every painted pixel
+  //    PURE WHITE. A ramp here would give an actor under an overhead the shading
+  //    an exposed one has, which is the one thing x-ray must not do.
   //  - the silhouette must stay inside the entity's collision radius
   //    (PLAYER_RADIUS / ZOMBIE_RADII) scaled by BODY_SS.
   //  - guns are `gun-<weaponId>` for all five weapons, pre-coloured (not
@@ -256,10 +261,13 @@ export class GfxTextures {
  */
 function bakeTiles(sheet: HTMLImageElement): Atlas {
   // Counted, not guessed: floors (sum of variants, 36) + walls (5 families x 16)
-  // + shades (16) + props (22) + decor (17) = 171 cells of 96px. At 2048 wide
-  // that is 20 per row and 9 of the 10 available rows, so phase 3's overheads
-  // (9-slice + two straight pairs = 13) fit — but only just. The next family
-  // after that wants a taller canvas rather than a bigger cell.
+  // + shades (16) + props (22) + decor (17) + overheads (a 9-slice and two
+  // straight pairs, 13) = 184 cells of 96px. At 2048 wide that is 20 per row and
+  // all 10 of the available rows, i.e. 184 of a possible 200 — the overheads fit,
+  // but they were the last family that does. The next one wants a taller canvas
+  // rather than a bigger cell; `cell()` throws on overflow rather than silently
+  // dropping frames, and scene.ts's `tx.has` guards would turn a dropped frame
+  // into an invisible prop, so do not rely on it noticing.
   const c = document.createElement('canvas');
   c.width = 2048; c.height = 1024;
   const x = c.getContext('2d')!;
@@ -309,6 +317,15 @@ function bakeTiles(sheet: HTMLImageElement): Atlas {
   for (const key of Object.keys(DECOR_ART)) {
     const f = Number(key);
     cell(decorKey(f), 0.5, 0.5, g => drawDecor(g, sheet, f));
+  }
+  // Overheads: a slab's 9 autotile pieces, a line's two straight ones. Anchored
+  // top-left like the rest of the tilemap — they are tiles that happen to be
+  // drawn above the actors rather than under them.
+  for (const key of Object.keys(OVER_ART)) {
+    const id = Number(key);
+    for (let v = 0; v < overVariants(id); v++) {
+      cell(overKey(id, v), 0, 0, g => drawOver(g, sheet, id, v));
+    }
   }
 
   const base = Texture.from(c);
@@ -380,9 +397,16 @@ function bakeAtlas(): Atlas {
     const frames: (number | 'idle')[] = ['idle'];
     for (let f = 0; f < WALK_FRAMES; f++) frames.push(f);
     for (const f of frames) {
+      const ph = f === 'idle' ? null : (f as number) / WALK_FRAMES;
       cell(bodyKey(kind, f), size, size, 0.5, 0.5, g => {
         g.translate(size / 2, size / 2);
-        drawBody(g, kind, R, f === 'idle' ? null : (f as number) / WALK_FRAMES);
+        drawBody(g, kind, R, ph);
+      });
+      // ...and the same frame flat, for an actor under an overhead. One per
+      // frame rather than one per kind, so an x-rayed player still walks.
+      cell(bodyFlatKey(kind, f), size, size, 0.5, 0.5, g => {
+        g.translate(size / 2, size / 2);
+        drawBodyFlat(g, kind, R, ph, size);
       });
     }
   }

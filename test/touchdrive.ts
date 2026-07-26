@@ -137,23 +137,50 @@ class Page {
     });
   }
 
-  /** Mean luminance of the rendered frame, 0-255. Screenshot out, decode back
-   *  in: the canvas is WebGL without preserveDrawingBuffer, so nothing outside
-   *  the render loop can read its pixels, but a JPEG can be handed to the page
-   *  and measured there. Used to compare what two matches actually look like. */
-  async luma(): Promise<number> {
+  /** Luminance of the rendered frame, 0-255. Screenshot out, decode back in: the
+   *  canvas is WebGL without preserveDrawingBuffer, so nothing outside the render
+   *  loop can read its pixels, but a JPEG can be handed to the page and measured
+   *  there.
+   *
+   *  Three numbers, because the lightmap has two independent things worth seeing.
+   *  `mean` compares what two matches look like overall — a lightmap that never
+   *  got its shadow shows up as one match being several times brighter than the
+   *  other. `centre` and `edge` compare the middle of the screen against the four
+   *  corners, which is the *shape* of the light: the camera is centred on the
+   *  player, so in Outbreak that ratio IS the vision cone, and in TDM it has to
+   *  stay near flat because TDM does no line-of-sight masking at all. */
+  async luma(): Promise<{ mean: number; centre: number; edge: number }> {
     const shot = await this.send('Page.captureScreenshot', { format: 'jpeg', quality: 70 });
     const data = (shot.result as { data: string }).data;
-    return this.evaluate<number>(`(async () => {
+    return this.evaluate<{ mean: number; centre: number; edge: number }>(`(async () => {
       const blob = await (await fetch('data:image/jpeg;base64,${data}')).blob();
       const img = await createImageBitmap(blob);
       const cv = new OffscreenCanvas(img.width, img.height);
       const g = cv.getContext('2d');
       g.drawImage(img, 0, 0);
-      const px = g.getImageData(0, 0, cv.width, cv.height).data;
-      let sum = 0;
-      for (let i = 0; i < px.length; i += 4) sum += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
-      return sum / (px.length / 4);
+      const W = cv.width, H = cv.height;
+      const px = g.getImageData(0, 0, W, H).data;
+      const box = (fx, fy, fw, fh) => {
+        const x0 = Math.round(fx * W), y0 = Math.round(fy * H);
+        const x1 = Math.round((fx + fw) * W), y1 = Math.round((fy + fh) * H);
+        let sum = 0, n = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const i = (y * W + x) * 4;
+            sum += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+            n++;
+          }
+        }
+        return sum / n;
+      };
+      const c = 0.15;
+      const corners = [[0, 0], [1 - c, 0], [0, 1 - c], [1 - c, 1 - c]]
+        .map(([x, y]) => box(x, y, c, c));
+      return {
+        mean: box(0, 0, 1, 1),
+        centre: box(0.4, 0.4, 0.2, 0.2),
+        edge: corners.reduce((a, v) => a + v, 0) / corners.length,
+      };
     })()`);
   }
 
@@ -353,6 +380,199 @@ console.log('art invariants (measured on a real canvas)');
     check(ratio <= 1,
       `${kind} silhouette stays inside its collision radius (peak ${ratio.toFixed(3)} of R)`);
   }
+
+  // 3. The x-ray silhouette must be FLAT and must be the same shape.
+  //
+  // Flat is the property that makes occluding props legal: a tinted luminance
+  // ramp would give an actor under an awning the shading an exposed one has, and
+  // the whole rule is that the information delta is zero. Same shape is the other
+  // half — the silhouette is what a player shoots at, so it has to be the body,
+  // not an approximation of it, which is why drawBodyFlat composites the real
+  // draw calls rather than re-drawing them.
+  const flats = await page.evaluate<{ shaded: number; kinds: Record<string, [number, number]> }>(`(async () => {
+    const art = await import('/client/js/gfx/art.ts');
+    const C = await import('/shared/constants.ts');
+    const radii = { player: C.PLAYER_RADIUS, walker: C.ZOMBIE_RADII.walker,
+                    runner: C.ZOMBIE_RADII.runner, brute: C.ZOMBIE_RADII.brute };
+    let shaded = 0;
+    const kinds = {};
+    for (const kind of art.BODY_KINDS) {
+      const R = radii[kind] * art.BODY_SS;
+      const size = Math.ceil(2 * R) + 2;
+      const cv = new OffscreenCanvas(size, size);
+      const g = cv.getContext('2d');
+      let flatPx = 0, rampPx = 0;
+      const frames = ['idle'];
+      for (let f = 0; f < art.WALK_FRAMES; f++) frames.push(f);
+      for (const f of frames) {
+        const ph = f === 'idle' ? null : f / art.WALK_FRAMES;
+        for (const flat of [true, false]) {
+          g.clearRect(0, 0, size, size);
+          g.save();
+          g.translate(size / 2, size / 2);
+          if (flat) art.drawBodyFlat(g, kind, R, ph, size);
+          else art.drawBody(g, kind, R, ph);
+          g.restore();
+          const d = g.getImageData(0, 0, size, size).data;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] <= 8) continue;
+            if (flat) {
+              flatPx++;
+              // premultiplied-safe: at full alpha a flat pixel is pure white
+              if (d[i + 3] === 255 && (d[i] < 250 || d[i + 1] < 250 || d[i + 2] < 250)) shaded++;
+            } else rampPx++;
+          }
+        }
+      }
+      kinds[kind] = [flatPx, rampPx];
+    }
+    return { shaded, kinds };
+  })()`);
+  check(flats.shaded === 0,
+    `the x-ray silhouette carries no luminance ramp (${flats.shaded} shaded pixels)`);
+  for (const [kind, [flatPx, rampPx]] of Object.entries(flats.kinds)) {
+    // Exactly equal, not merely close: source-atop keeps the destination's alpha
+    // untouched, so anything but equality means the composite ate or added a pixel.
+    check(flatPx > 0 && flatPx === rampPx,
+      `${kind}'s silhouette covers exactly the body it stands in for (${flatPx} vs ${rampPx} px)`);
+  }
+}
+
+// ---- overheads and the x-ray, on a real scene graph ----
+//
+// The x-ray is not a look, it is what makes occluding props legal at all: a fixed
+// top-down camera means an awning drawn over a tile hides whoever stands there
+// from every player at once, including one at 90° with clear LOS whose shots
+// still land. So the rule is that the information delta is zero — the body goes
+// flat and *everything else about the actor renders as normal* — and it is a rule
+// that erodes quietly, one forgotten child at a time. Hence measuring it.
+//
+// A Scene can be built without a WebGL context (nothing here renders, it only
+// asks what the graph looks like), which is why this is a scene-graph test rather
+// than another screenshot.
+console.log('overheads and the x-ray (real scene graph)');
+{
+  interface XrayProbe {
+    tiles: number; missing: number; overSprites: number; overGroups: number;
+    actors: number[]; xray: number[];
+    coveredAlpha: number; openAlpha: number;
+    coveredFlat: boolean; openFlat: boolean; zombieFlat: boolean;
+    xrayInWorld: boolean; worldOrder: number[]; lightAboveWorld: boolean;
+  }
+  const xr = await page.evaluate<XrayProbe>(`(async () => {
+    // The vendored path rather than the bare 'pixi.js' specifier: index.html's
+    // import map resolves that specifier to exactly this URL, so importing it
+    // directly is guaranteed to be the same module instance scene.ts got. A
+    // second copy of Pixi would fail the parent-identity checks below for a
+    // reason that has nothing to do with the code under test.
+    const pixi = await import('/vendor/pixi.min.mjs');
+    const maps = await import('/shared/maps.ts');
+    const C = await import('/shared/constants.ts');
+    const ts = await import('/client/js/gfx/tileset.ts');
+    const art = await import('/client/js/gfx/art.ts');
+    const { GfxTextures } = await import('/client/js/gfx/textures.ts');
+    const { Scene } = await import('/client/js/gfx/scene.ts');
+
+    const grid = maps.buildMap('outbreak');
+    const tx = new GfxTextures();
+    await tx.bake(grid);
+
+    // Every authored overhead tile must resolve to a frame that was actually
+    // baked. scene.ts guards with tx.has(), so a missing bake is an invisible
+    // prop rather than a throw — and an invisible prop is one that hides people.
+    let missing = 0, tiles = 0;
+    for (let ty = 0; ty < grid.h; ty++) {
+      for (let tx0 = 0; tx0 < grid.w; tx0++) {
+        const id = grid.overAt(tx0, ty);
+        if (!id) continue;
+        tiles++;
+        const same = (x, y) => grid.overAt(x, y) === id;
+        const key = ts.overKey(id, ts.overVariant(id, ts.neighbourMask(same, tx0, ty)));
+        if (!tx.has(key)) missing++;
+      }
+    }
+
+    const stage = new pixi.Container();
+    const scene = new Scene(stage, tx, false, grid);
+    const L = scene.layers;
+
+    // A covered floor tile and an open one, taken from the map rather than
+    // hardcoded, so a level edit cannot make this test pass by accident.
+    const spot = (want) => {
+      for (let ty = 0; ty < grid.h; ty++) {
+        for (let tx0 = 0; tx0 < grid.w; tx0++) {
+          if (grid.solid(tx0, ty)) continue;
+          if (!!grid.overAt(tx0, ty) !== want) continue;
+          return { x: tx0 * C.TILE + C.TILE / 2, y: ty * C.TILE + C.TILE / 2 };
+        }
+      }
+      return null;
+    };
+    const covered = spot(true), open = spot(false);
+    const mk = (id, x, y) => ({ id, name: 'P' + id, team: 1, bot: 0, x, y, aim: 0,
+      hp: 100, alive: 1, w: 'rifle', rld: 0, k: 0, d: 0, prot: 0, spr: 0 });
+    scene.syncPlayers([mk(1, covered.x, covered.y), mk(2, open.x, open.y)], 2,
+      { x: open.x, y: open.y, aim: 0 }, 0);
+    scene.syncZombies([{ id: 9, x: covered.x, y: covered.y, hp: 40, maxHp: 40,
+      type: 'walker', aim: 0, fr: 0 }], 0);
+
+    // Which set a body sprite's texture came from. Identity against the atlas
+    // entries, so this cannot be fooled by a lookalike key.
+    const isFlat = (sprite, kind) => {
+      const frames = ['idle', 0, 1, 2, 3];
+      return frames.some(f => sprite.texture === tx.entry(art.bodyFlatKey(kind, f)).tex);
+    };
+    const body = (root) => root.children[1];   // prot|fring, BODY, edge, ...
+    const inLayer = (layer) => layer.children.map(c => c.children.length);
+    const covRoot = L.xray.children.find(c => c.children.length === 9);
+    const zRoot = L.xray.children.find(c => c.children.length === 7);
+    const openRoot = L.actors.children.find(c => c.children.length === 9);
+
+    return {
+      tiles, missing,
+      overSprites: L.overhead.children.reduce((n, c) => n + c.children.length, 0),
+      overGroups: L.overhead.children.length,
+      actors: inLayer(L.actors), xray: inLayer(L.xray),
+      coveredAlpha: covRoot ? body(covRoot).alpha : -1,
+      openAlpha: openRoot ? body(openRoot).alpha : -1,
+      coveredFlat: !!covRoot && isFlat(body(covRoot), 'player'),
+      openFlat: !!openRoot && isFlat(body(openRoot), 'player'),
+      zombieFlat: !!zRoot && isFlat(body(zRoot), 'walker'),
+      xrayInWorld: L.xray.parent === L.world && L.overhead.parent === L.world,
+      worldOrder: [L.actors, L.overhead, L.xray, L.fxTop].map(c => L.world.getChildIndex(c)),
+      lightAboveWorld: stage.getChildIndex(L.lightSlot) > stage.getChildIndex(L.world),
+    };
+  })()`);
+
+  check(xr.missing === 0,
+    `every authored overhead tile has a baked frame (${xr.tiles} tiles, ${xr.missing} missing)`);
+  check(xr.overSprites === xr.tiles && xr.overGroups > 0,
+    `and is drawn: ${xr.overSprites} sprites in ${xr.overGroups} height groups`);
+
+  // The counts ARE the "all nine children survive" assertion: nine for a player
+  // (prot ring, body, edge ring, gun, aim dot, name, bar bg, bar fg, reload) and
+  // seven for a zombie (frenzy ring, body, edge, two eyes, bar bg, bar fg).
+  // Reparenting the whole root is what makes that true by construction; a future
+  // change that x-rays the body sprite alone would show up here immediately.
+  check(xr.xray.length === 2 && xr.xray.includes(9) && xr.xray.includes(7),
+    `a covered player and a covered zombie move above the overhead intact`
+    + ` (child counts ${xr.xray.join(', ')})`);
+  check(xr.actors.length === 1 && xr.actors[0] === 9,
+    `and one in the open stays under it (child counts ${xr.actors.join(', ')})`);
+  check(xr.coveredFlat && xr.zombieFlat,
+    'both x-rayed bodies draw the flat silhouette');
+  check(!xr.openFlat, 'the exposed one still draws the shaded frame');
+  check(Math.abs(xr.coveredAlpha - 0.8) < 1e-6 && xr.openAlpha === 1,
+    `only the silhouette is transparent (${xr.coveredAlpha} vs ${xr.openAlpha})`);
+
+  // Layer order, which is the other half of "the information delta is zero": the
+  // silhouette must sit above the overhead but INSIDE `world`, under the lightmap.
+  // Above the lightmap an occluded player would be *brighter* than an exposed one.
+  check(xr.xrayInWorld, 'the overhead and x-ray layers live inside the lit world');
+  check(xr.lightAboveWorld, 'and the lightmap still composites over all of it');
+  const [a, o, x, fx] = xr.worldOrder;
+  check(a < o && o < x && x < fx,
+    `layer order is actors < overhead < xray < fx (${xr.worldOrder.join(' < ')})`);
 }
 
 check(await page.evaluate(`document.body.classList.contains('touch')`),
@@ -542,6 +762,16 @@ await sleep(600);
 await burst();
 const lumaFirst = await page.luma();
 
+// The vision cone, as a shape rather than a brightness. This is the assertion the
+// indoor/outdoor ambient split has to survive: the split is drawn as a static
+// world-space fill INSIDE the lightmap, below the additive lights, so getting that
+// order wrong replaces the cone with a flat wash — same mean luminance, no cone.
+// The mean cannot see that; the ratio can.
+const coneFirst = lumaFirst.centre / lumaFirst.edge;
+check(coneFirst > 1.5,
+  `Outbreak lights the player and not the corners (centre ${lumaFirst.centre.toFixed(1)}`
+  + ` vs edge ${lumaFirst.edge.toFixed(1)}, ${coneFirst.toFixed(2)}x)`);
+
 await quitToMenu();
 check(await page.waitFor(`!document.getElementById('menu').classList.contains('hidden')`), 'pause -> quit lands back on the menu');
 check(await page.evaluate(`document.getElementById('conn-status').textContent === ''`),
@@ -563,9 +793,15 @@ check(page.errors.length === errorsBefore,
 // matches look like is the whole assertion. A lightmap that missed the rotate
 // showed up as the first match being several times brighter than the second.
 const lumaSecond = await page.luma();
-const spread = Math.abs(lumaFirst - lumaSecond) / Math.max(lumaFirst, lumaSecond);
+const spread = Math.abs(lumaFirst.mean - lumaSecond.mean) / Math.max(lumaFirst.mean, lumaSecond.mean);
 check(spread < 0.25,
-  `both matches light the world the same (mean luma ${lumaFirst.toFixed(1)} vs ${lumaSecond.toFixed(1)}, ${(spread * 100).toFixed(0)}% apart)`);
+  `both matches light the world the same (mean luma ${lumaFirst.mean.toFixed(1)} vs ${lumaSecond.mean.toFixed(1)}, ${(spread * 100).toFixed(0)}% apart)`);
+// ...and the cone survives the rebuild too. The ambient split's geometry is built
+// once per Lights, so a second match rebuilds it: this is the reading that would
+// catch it coming back empty (a flat frame) or drawn at the wrong transform.
+const coneSecond = lumaSecond.centre / lumaSecond.edge;
+check(coneSecond > 1.5,
+  `and the second match still has its vision cone (${coneSecond.toFixed(2)}x)`);
 
 // ---- /touch-preview.html: drives the same Touch/stick modules ----
 console.log('\ntouch preview page');
@@ -643,6 +879,24 @@ check(cv[0] === 1920 && cv[1] === 1080, `backing store 1:1 at DPR 1 (${cv[0]}x${
 check(cv[2] === '1920px' && cv[3] === '1080px', `autoDensity sets the CSS size (${cv[2]} x ${cv[3]})`);
 check(await page.evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--s').trim() === '1'`),
   'HUD scale is 1 on a desktop viewport');
+
+// The other half of the ambient work, measured against the Outbreak readings
+// above: the mode axis, and TDM's standing promise that it does no line-of-sight
+// masking. Both are things only a screenshot can see.
+{
+  const tdm = await page.luma();
+  const cone = tdm.centre / tdm.edge;
+  check(tdm.mean > lumaFirst.mean * 2,
+    `skirmish is daylight and Outbreak is not (mean luma ${tdm.mean.toFixed(1)}`
+    + ` vs ${lumaFirst.mean.toFixed(1)})`);
+  // Not "centre equals edge" — the player can be standing in a building, and the
+  // indoor ambient is legitimately darker than the forecourt around it. What must
+  // be absent is the radial falloff: a cone would put the centre far ABOVE the
+  // corners, which is what the Outbreak reading looks like.
+  check(cone < 1.5,
+    `and TDM has no vision cone, only ambience (centre/edge ${cone.toFixed(2)}x,`
+    + ` Outbreak ${coneFirst.toFixed(2)}x)`);
+}
 
 const dm0 = Number(await page.evaluate<string>(`document.getElementById('mag').textContent`));
 await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1200, y: 400, button: 'left', clickCount: 1, buttons: 1 });

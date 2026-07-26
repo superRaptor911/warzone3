@@ -19,6 +19,7 @@ import {
   DECOR_ART, E, N, OVER_ART, S, W, floorKey, floorVariant, floorVariants, isFloorMat,
   isOverId, isPropMat, isWallMat, overVariant, overVariants,
 } from '../client/js/gfx/tileset.ts';
+import { AMBIENT, ambientFor, indoorRects, indoorTiles } from '../client/js/gfx/ambient.ts';
 import { createPickup } from '../server/entities.ts';
 import {
   addStats, claimProfile, closeDb, leaderboard, nameError, nameKey, nameTaken,
@@ -1193,8 +1194,8 @@ console.log('compound: 180 degree rotational symmetry');
     }
   }
   check(tiles === 0, `every wall, crate and floor tile has its twin (${tiles} mismatches)`);
-  check(mats === 0, `so does every material (${mats} mismatches) — the phase-3 ambient`
-    + ' split reads MAT_INDOOR, so an asymmetric floor is asymmetric lighting');
+  check(mats === 0, `so does every material (${mats} mismatches) — the ambient split`
+    + ' reads MAT_INDOOR, so an asymmetric floor is asymmetric lighting');
   check(overs === 0, `and every overhead (${overs} mismatches)`);
 
   // Spawns: each team's set must be the other's rotation, not merely the same
@@ -1220,12 +1221,13 @@ console.log('compound: 180 degree rotational symmetry');
   check(lonely === 0, `every decor item has a rotated twin (${lonely} without)`);
 }
 
-// ---- overheads: authored in phase 2, drawn in phase 3 ----
+// ---- overheads: the authoring rules the art cannot express ----
 //
-// Nothing renders these yet, which is precisely why they need asserting now: a
-// mistake made here surfaces a phase later as "the awning has no south edge" or
-// "the pipe run turns a corner and draws a straight piece", long after the map
-// was authored.
+// The autotile sets are incomplete by design — no piece of the 9-slice carries
+// both a north and a south edge, and no line piece is an elbow — so a mistake
+// here does not throw, it draws an awning with a side missing or a pipe run
+// threading straight through its own corner. These are the assertions that turn
+// that into a failure at the point the map is authored.
 console.log('overheads: art, autotiling and the 3% budget');
 {
   for (const name of ['compound', 'outbreak']) {
@@ -1274,15 +1276,109 @@ console.log('overheads: art, autotiling and the 3% budget');
       + ` = ${pct.toFixed(2)}%, budget 3% (margin ${(3 - pct).toFixed(2)} points)`);
   }
 
-  // Every declared clearance must be well over a body: phase 3's occlusion test
-  // is "is there anything above this actor", which is only safe while nothing in
-  // the table is low enough for a player to be visible under it from the side.
+  // Every declared clearance must be well over a body: the occlusion test in
+  // gfx/scene.ts is "is there anything above this actor", which is only safe while
+  // nothing in the table is low enough for a player to be visible under it.
   const lowest = Math.min(...Object.values(OVER_HEIGHT));
   check(lowest > 4 * PLAYER_RADIUS,
     `the lowest overhead (${lowest}px) clears a body by a wide margin`);
   check(Object.keys(OVER).filter(k => k !== 'NONE')
     .every(k => OVER_HEIGHT[OVER[k as keyof typeof OVER]] > 0),
     'every overhead id declares a height');
+}
+
+// ---- the ambient split: two values, and the tiles each one covers ----
+//
+// gfx/lights.ts cannot be imported under Node (it imports Pixi), which is why
+// the split lives in the pure gfx/ambient.ts — exactly the arrangement view.ts
+// and stick.ts use. Both things that can be wrong here are provable without a
+// screen: the ordering of the two values, and the mask that selects between them.
+console.log('ambient: the indoor/outdoor floor of the lightmap');
+{
+  const luma = (v: number): number =>
+    0.2126 * ((v >> 16) & 255) + 0.7152 * ((v >> 8) & 255) + 0.0722 * (v & 255);
+
+  for (const mode of ['zombie', 'tdm'] as const) {
+    const a = AMBIENT[mode];
+    const ratio = luma(a.indoor) / luma(a.outdoor);
+    check(ratio < 1, `${mode}: indoors is the darker of the two (${(ratio * 100).toFixed(0)}% of outdoor)`);
+    // The floor of the rule, twice over: a split that dips near black hides what
+    // stands on it however honest the contrast is, and one within a few percent
+    // of the outdoor value is not a split at all.
+    check(ratio > 0.55 && ratio < 0.95,
+      `${mode}: and dims rather than hides (${(ratio * 100).toFixed(0)}%, band 55-95%)`);
+    check(((a.indoor >> 16) & 255) > 16 && ((a.indoor >> 8) & 255) > 16 && (a.indoor & 255) > 16,
+      `${mode}: no channel of the indoor value reaches black`);
+  }
+  check(ambientFor('zombie') === AMBIENT.zombie && ambientFor('tdm') === AMBIENT.tdm,
+    'each mode selects its own pair');
+  check(ambientFor('nonesuch') === AMBIENT.tdm,
+    'and an unknown mode gets the bright pair, not the Outbreak one');
+
+  for (const name of ['compound', 'outbreak']) {
+    const g = buildMap(name);
+    const roof = indoorTiles(g);
+    let flagged = 0, roofed = 0, roofedSolid = 0, floorNoFlag = 0, missedFlag = 0, street = 0;
+    for (let ty = 0; ty < g.h; ty++) {
+      for (let tx = 0; tx < g.w; tx++) {
+        const i = g.idx(tx, ty);
+        const flag = (g.matAt(tx, ty) & 0x80) !== 0;
+        if (flag) flagged++;
+        if (!roof[i]) { if (flag) missedFlag++; continue; }
+        roofed++;
+        if (g.solid(tx, ty)) roofedSolid++;
+        // Pass 2 only ever writes SOLID tiles, so a roofed floor tile without the
+        // authored flag would mean the derivation had started feeding on its own
+        // output and was creeping across the map.
+        else if (!flag) floorNoFlag++;
+        if (!g.solid(tx, ty) && matId(g.matAt(tx, ty)) === MAT.ASPHALT) street++;
+      }
+    }
+    check(missedFlag === 0, `${name}: every authored MAT_INDOOR tile is roofed (${flagged} of them)`);
+    check(floorNoFlag === 0, `${name}: and no unflagged floor tile was swept in (${floorNoFlag})`);
+    // The reason pass 2 exists: without it a building's walls and its furniture
+    // stay at full outdoor brightness inside a dark room.
+    check(roofedSolid > 0,
+      `${name}: the walls and furniture of a roofed room are roofed too (${roofedSolid} solids)`);
+    check(roofed > 0 && roofed < g.w * g.h,
+      `${name}: ${roofed}/${g.w * g.h} tiles roofed`
+      + ` (${(100 * roofed / (g.w * g.h)).toFixed(0)}%) — a split that splits nothing is a bug`);
+    check(street === 0, `${name}: the asphalt stays outdoors (${street} roofed street tiles)`);
+
+    // The rects are what actually gets filled, so they have to be the mask and
+    // nothing but the mask — a run that overshoots by one tile darkens a room's
+    // neighbour, and one that overlaps double-fills at the same colour and hides
+    // the bug.
+    const paint = new Uint8Array(g.w * g.h);
+    let overlap = 0, offGrid = 0;
+    for (const r of indoorRects(g)) {
+      if (r.x % TILE || r.y % TILE || r.w % TILE || r.h !== TILE) { offGrid++; continue; }
+      for (let tx = r.x / TILE; tx < (r.x + r.w) / TILE; tx++) {
+        const i = g.idx(tx, r.y / TILE);
+        if (paint[i]) overlap++;
+        paint[i] = 1;
+      }
+    }
+    check(offGrid === 0, `${name}: every run is tile-aligned and one row tall`);
+    check(overlap === 0, `${name}: no run overlaps another (${overlap})`);
+    check(paint.every((v, i) => v === roof[i]),
+      `${name}: the merged runs cover exactly the roofed tiles`
+      + ` (${indoorRects(g).length} runs for ${roofed} tiles)`);
+  }
+
+  // Compound is authored through `rotated()`, and the ambient is now something a
+  // player can see — so an asymmetric roof would be one team fighting in a
+  // darker building than the other. The mat symmetry check above is necessary but
+  // not sufficient: this mask is derived from `tiles` as well.
+  const g = buildMap('compound');
+  const roof = indoorTiles(g);
+  let asym = 0;
+  for (let y = 0; y < g.h; y++) {
+    for (let x = 0; x < g.w; x++) {
+      if (roof[g.idx(x, y)] !== roof[g.idx(g.w - 1 - x, g.h - 1 - y)]) asym++;
+    }
+  }
+  check(asym === 0, `compound: the roofed region is its own 180° rotation (${asym} mismatches)`);
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);

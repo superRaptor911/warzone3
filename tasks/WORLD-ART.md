@@ -1,14 +1,15 @@
-# World art & level redesign — phase 3
+# World art & level redesign
 
-Handover for the last phase of the world-art work. Phases 1 and 2 are done and on
-disk ("Draw the world from real art instead of coloured rectangles", "Draw the
-levels as places").
+All three phases are done and on disk ("Draw the world from real art instead of
+coloured rectangles", "Draw the levels as places", "Light the places and hang the
+overheads over them").
 
-Read `CLAUDE.md` → **World art** first: it documents everything that landed (the
-`mat`/`over`/`decor` model, wall compositing, furniture props, the rotational
-authoring, `FLOOR_FX`, the atlas, the body keyline). This file is only the part
-that is *not* yet in the code — the plan and the design decisions behind it, so
-they do not get re-litigated or accidentally reversed.
+Read `CLAUDE.md` → **World art** and **Rendering** first: they document what the
+code does (the `mat`/`over`/`decor` model, wall compositing, furniture props, the
+rotational authoring, `FLOOR_FX`, the atlases, the body keyline, the ambient split,
+the overhead and x-ray layers). This file is the part that is *not* in the code —
+the design decisions behind it, so they do not get re-litigated or accidentally
+reversed.
 
 ## What has landed
 
@@ -32,7 +33,7 @@ AO, generated asphalt grain, materials-aware minimap, entity keyline pass, tests
 - Furniture is `T_CRATE` + a `mat`: sofas, beds, worktops, sinks, hobs, desks,
   benches, round tables, placed with `propRun` for the multi-tile pieces.
 - `Grid.over` + `OVER`/`OVER_HEIGHT` carry the overheads, authored in both maps
-  and rendered by nothing yet. 2.55% / 2.30% of floor tiles against the 3% cap.
+  ahead of the renderer. 2.55% / 2.30% of floor tiles against the 3% cap.
 - `client/map-preview.html` draws a whole map from real art, plus every material,
   wall variant, prop, decor frame and overhead variant.
 
@@ -75,35 +76,57 @@ conclusion, so it is recorded.
   and which is worth keeping: **paint from the street inwards, filtered to one
   tile kind per pass.**
 
-## Phase 3 — lighting, overheads, x-ray
+## Phase 3 — lighting, overheads, x-ray (landed)
 
-1. **Per-material ambient floor.** `lights.ts` has one ambient constant per mode;
-   it becomes a two-entry indoor/outdoor lookup driven by the `MAT_INDOOR` bit
-   that `mat` already carries. Stays inside the existing rules: dims and never
-   hides, identical on every client and every quality tier, and Compound's
-   rotational symmetry gives both teams the same split (asserted), so TDM
-   fairness is untouched. Both maps now have real indoor space to split on —
-   Compound is 37% indoor floor, and `map-preview.html`'s "mark indoor" toggle
-   shows exactly which tiles the lookup will read.
-2. **Overhead rendering.** `OVER_ART` and `drawOver` already exist and are
-   exercised by the preview page; what phase 3 adds is the bake (`overKey`,
-   `overVariants`, ~13 more atlas cells — the count note in `textures.ts` says
-   they fit, but only just) and a layer above `actors`. Detection is a grid
-   lookup: an actor is occluded if `grid.overAt` of its centre tile is non-zero.
-   O(1) per actor per frame, no AABB fuzz, no half-occluded flicker. Draw
-   overlapping overheads in `OVER_HEIGHT` order.
-3. **X-ray silhouette — exactly this, no more.** Reparent the whole
-   `PlayerVisual.root` above the occluder and flat-tint **only the body** (team
-   colour, alpha ~0.8, no luminance ramp). The edge ring, spawn-protection ring,
-   gun, aim dot, name, health bar and reload label all render as normal. All nine
-   children of `PlayerVisual.root`, and the zombie's frenzy ring / eyes / bar,
-   must survive. **Assert it** — the rule is easy to erode later.
-4. **The silhouette stays inside `world`, under the lightmap.** Above it, an
-   occluded player would be *brighter* than an exposed one, which is an
-   information gain and breaks the zero-delta rule.
-5. **Extend `touchdrive.ts`'s brightness pass over the new lightmap path.** This
-   is the same danger zone as the lightmap texture-resize bug that made Outbreak
-   render fully lit; screen luminance is the only instrument that sees it.
+What shipped, and the decisions inside it that are worth keeping:
+
+1. **Per-material ambient floor**, as `client/js/gfx/ambient.ts` — pure, because
+   `lights.ts` imports Pixi and Node cannot import it, and the two things that can
+   be wrong (the ordering of the values, the mask that selects between them) are
+   both provable without a screen. Measured on the preview canvas: identical
+   materials come out at 1.00 with ambient off, 0.79 with TDM's pair and 0.73 with
+   Outbreak's.
+   - **It is information-neutral by argument, not by hope.** Multiply scales a body
+     and the floor under it by the same factor, so an out-of-sight zombie's
+     contrast against its room is the same at either value. What *would* break
+     "dims, never hides" is a value near black, which is why the test asserts a
+     55–95% band and a per-channel floor rather than just "darker".
+   - **`MAT_INDOOR` is authored on floors only, so the rest is derived.** Without
+     that a building's walls and furniture stay at full outdoor brightness inside a
+     dark room. The 8-neighbourhood was measured against the 4: 40/28 lit specks
+     down to 10/7, and the survivors are outer corners of a footprint where the
+     roof edge honestly is.
+   - Compound's roofed region is asserted to be its own 180° rotation. The `mat`
+     symmetry check is not sufficient — this mask reads `tiles` too.
+2. **Overheads are drawn** from the tile atlas (13 more cells, which took it to 184
+   of the 200 a 2048×1024 sheet holds — the next family needs a taller canvas),
+   grouped by id and added in ascending `OVER_HEIGHT` order.
+3. **X-ray, exactly as specified and no more.** The whole root is reparented into
+   an `xray` layer and only the body swaps to a flat bake at 0.8 alpha; all nine
+   children of a player and all seven of a zombie draw as they do in the open.
+   `test/touchdrive.ts` builds a real `Scene` (no WebGL needed) and counts them.
+   - **`flat-<kind>-<frame>` is its own bake, not a tint of the ramp**, and it is
+     made by compositing the real draw calls (`source-atop` white) rather than by
+     re-drawing the shapes — so the silhouette is pixel-identical in coverage to
+     the body it stands in for, asserted, and inherits the radius invariant instead
+     of re-arguing it.
+4. **Both new layers stay inside `world`, under the lightmap.** Above it, an
+   occluded player would be *brighter* than an exposed one.
+5. **The brightness pass now measures the shape of the light, not just its
+   amount.** `Page.luma()` returns mean plus a centre box and the four corners:
+   Outbreak must read >1.5× brighter at the centre (that ratio *is* the vision
+   cone, and a mis-ordered ambient overlay would flatten it without moving the
+   mean), TDM must read under it (no LOS masking, ever), and TDM's mean must be
+   more than twice Outbreak's (the mode axis). The two-match equality check now
+   covers the cone as well, since the ambient geometry is rebuilt per match.
+
+### Still open, deliberately
+
+- The awning's source cells are a flat tan slab in the middle of the 9-slice, so a
+  4×2 canopy reads as a plain block. It was picked in phase 2 on extent and trim,
+  and changing it is an art decision, not a rendering one.
+- Corpses and blood decals sit below the overheads and are hidden by them. They are
+  cosmetic and carry no information a live actor does not, so they get no x-ray.
 
 ### Testing notes
 
@@ -119,6 +142,12 @@ conclusion, so it is recorded.
 - Map building must stay **deterministic** — `scatter` uses a seeded PRNG. Two
   clients in one room have to agree about the world, and the tests assert two
   builds are byte-identical.
-- The overhead budget assertion prints its margin (0.45 / 0.70 points). If phase
-  3 makes x-ray feel good and the temptation is to add more overheads, that is a
-  *design* decision to re-take deliberately, not a number to nudge.
+- `test/touchdrive.ts` also holds the x-ray's scene-graph assertions, and they are
+  the ones to keep honest: child counts per actor, which layer a covered actor is
+  parented to, which texture set its body came from, and the order of the layers
+  inside `world`. A Scene builds without a WebGL context, so this costs nothing.
+- The overhead budget assertion prints its margin (0.45 / 0.70 points). Now that
+  x-ray works and adding overheads *feels* free, that is exactly when the cap
+  matters: it is what keeps x-ray the exception rather than the normal way players
+  see each other, and raising it is a design decision to re-take deliberately, not
+  a number to nudge.
