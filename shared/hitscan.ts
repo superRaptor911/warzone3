@@ -24,16 +24,27 @@ export function rayCircle(
   return hit >= 0 ? hit : 0;
 }
 
-// One pellet: travels to the nearer of the first wall and the first target
-// circle. (dx, dy) must be unit length.
+// One pellet. `pierce` is how many extra bodies the round passes through
+// (weapons.ts): hits are the first pierce+1 bodies along the ray in distance
+// order, each with its own hit distance so the caller can apply falloff and
+// per-body decay. Walls always stop the round — bodies past the wall never
+// hit, whatever pierce remains. `dist` is where the pellet ends (the wall, its
+// range, or the near edge of the body that exhausted the pierce), which is
+// what the tracer draws. Pure geometry on purpose: damage decay stays with the
+// caller, because the client mirror has no authoritative HP and a pellet whose
+// reach depended on it could not be predicted. (dx, dy) must be unit length.
 export function castPellet<T extends HitCircle>(
-  grid: Grid, ox: number, oy: number, dx: number, dy: number, range: number, targets: readonly T[],
-): { dist: number; hit: T | null } {
-  let dist = grid.raycast(ox, oy, dx, dy, range);
-  let hit: T | null = null;
+  grid: Grid, ox: number, oy: number, dx: number, dy: number, range: number,
+  targets: readonly T[], pierce = 0,
+): { dist: number; hits: { tgt: T; dist: number }[] } {
+  const wallDist = grid.raycast(ox, oy, dx, dy, range);
+  const along: { tgt: T; dist: number }[] = [];
   for (const tgt of targets) {
     const d = rayCircle(ox, oy, dx, dy, tgt.x, tgt.y, tgt.radius);
-    if (d !== null && d < dist) { dist = d; hit = tgt; }
+    if (d !== null && d < wallDist) along.push({ tgt, dist: d });
   }
-  return { dist, hit };
+  along.sort((a, b) => a.dist - b.dist);
+  const hits = along.slice(0, pierce + 1);
+  const stopped = along.length > pierce; // more bodies than the round can pass
+  return { dist: stopped ? hits[hits.length - 1].dist : wallDist, hits };
 }

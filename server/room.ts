@@ -321,12 +321,15 @@ export class Room {
       // target, and a stale entry would be damaged (and credited) twice.
       const targets = this.hitscanTargets(p);
       this.rewindTargets(targets, rewind);
-      const { dist: hitDist, hit } = castPellet(this.grid, p.x, p.y, dx, dy, w.range, targets);
-      pellets.push({ a: round2(a), d: Math.round(hitDist) });
-      if (hit) {
-        const dmg = damageAt(w, hitDist);
-        const hx = p.x + dx * hitDist, hy = p.y + dy * hitDist;
-        this.damageTarget(hit, dmg, p, w.id, hx, hy);
+      const { dist: endDist, hits } = castPellet(this.grid, p.x, p.y, dx, dy, w.range, targets, w.pierce);
+      pellets.push({ a: round2(a), d: Math.round(endDist) });
+      // Each body along the ray is a distinct target, so damaging them in
+      // order can't re-enter the no-dead-guard path within one pellet; falloff
+      // uses each body's own hit distance, pierce decay stacks on top.
+      for (let b = 0; b < hits.length; b++) {
+        const { tgt, dist: hd } = hits[b];
+        const dmg = damageAt(w, hd) * Math.pow(w.pierceMult, b);
+        this.damageTarget(tgt, dmg, p, w.id, p.x + dx * hd, p.y + dy * hd);
       }
     }
     this.event({ e: 'shot', id: p.id, x: Math.round(p.x), y: Math.round(p.y), w: w.id, p: pellets });

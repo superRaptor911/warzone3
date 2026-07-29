@@ -148,7 +148,7 @@ console.log('hit rewind');
     shooter.lastRt = rt;
     const targets = room.hitscanTargets(shooter);
     room.rewindTargets(targets, room.rewindFrameFor(shooter));
-    return castPellet(room.grid, shooter.x, shooter.y, 1, 0, 2000, targets).hit !== null;
+    return castPellet(room.grid, shooter.x, shooter.y, 1, 0, 2000, targets).hits.length > 0;
   };
 
   check(target.y - lane.y > PLAYER_RADIUS * 2, 'target has moved clear of the firing line');
@@ -825,22 +825,79 @@ console.log('hitscan');
   }
   check(ox > 0, 'found an open lane to shoot down');
   const clear = castPellet(grid, ox, oy, 1, 0, 400, []);
-  check(clear.dist >= 400 && clear.hit === null, 'unobstructed pellet flies its full range');
+  check(clear.dist >= 400 && clear.hits.length === 0, 'unobstructed pellet flies its full range');
   const body = { x: ox + 200, y: oy, radius: PLAYER_RADIUS };
   const hit = castPellet(grid, ox, oy, 1, 0, 400, [body]);
-  check(hit.hit === body, 'pellet stops on a body in the lane');
+  check(hit.hits.length === 1 && hit.hits[0].tgt === body, 'pellet stops on a body in the lane');
   check(Math.abs(hit.dist - (200 - PLAYER_RADIUS)) < 0.01,
     `stops at the body's near edge (${hit.dist.toFixed(1)}px)`);
   const grazePast = castPellet(grid, ox, oy, 1, 0, 400,
     [{ x: ox + 200, y: oy + PLAYER_RADIUS + 2, radius: PLAYER_RADIUS }]);
-  check(grazePast.hit === null && grazePast.dist >= 400, 'a body beside the lane does not block');
+  check(grazePast.hits.length === 0 && grazePast.dist >= 400, 'a body beside the lane does not block');
   const behind = castPellet(grid, ox, oy, 1, 0, 400, [{ x: ox - 100, y: oy, radius: PLAYER_RADIUS }]);
-  check(behind.hit === null, 'a body behind the shooter does not block');
-  const nearest = castPellet(grid, ox, oy, 1, 0, 400, [
-    { x: ox + 300, y: oy, radius: PLAYER_RADIUS },
-    body,
-  ]);
-  check(nearest.hit === body, 'nearest body wins');
+  check(behind.hits.length === 0, 'a body behind the shooter does not block');
+  const far = { x: ox + 300, y: oy, radius: PLAYER_RADIUS };
+  const nearest = castPellet(grid, ox, oy, 1, 0, 400, [far, body]);
+  check(nearest.hits[0].tgt === body, 'nearest body wins');
+
+  // penetration: pierce is extra bodies passed, walls always stop the round
+  const line = [far, body, { x: ox + 380, y: oy, radius: PLAYER_RADIUS }];
+  const noPierce = castPellet(grid, ox, oy, 1, 0, 400, line, 0);
+  check(noPierce.hits.length === 1 && noPierce.hits[0].tgt === body,
+    'pierce 0 stops in the first body');
+  const one = castPellet(grid, ox, oy, 1, 0, 400, line, 1);
+  check(one.hits.length === 2 && one.hits[0].tgt === body && one.hits[1].tgt === far,
+    'pierce 1 hits two bodies in distance order');
+  check(Math.abs(one.dist - (300 - PLAYER_RADIUS)) < 0.01,
+    `and the tracer stops in the second (${one.dist.toFixed(1)}px)`);
+  const through = castPellet(grid, ox, oy, 1, 0, 400, [body], 1);
+  check(through.hits.length === 1 && through.dist >= 400,
+    'unspent pierce carries the tracer past the body to full range');
+  const capped = castPellet(grid, ox, oy, 1, 0, 400, line, WEAPONS.sniper.pierce);
+  check(capped.hits.length === 3 && capped.dist >= 400,
+    `sniper pierce ${WEAPONS.sniper.pierce} drills the whole line`);
+  const wallD = grid.raycast(ox, oy, 1, 0, 1e6);
+  const pastWall = castPellet(grid, ox, oy, 1, 0, wallD + 200,
+    [{ x: ox + wallD + 100, y: oy, radius: PLAYER_RADIUS }], 3);
+  check(pastWall.hits.length === 0 && Math.abs(pastWall.dist - wallD) < 0.01,
+    'a wall stops the round whatever pierce remains');
+
+  // the table the whole feature is tuned from
+  for (const w of Object.values(WEAPONS)) {
+    check(Number.isInteger(w.pierce) && w.pierce >= 0, `${w.id} pierce is a count`);
+    check(w.pierceMult > 0 && w.pierceMult <= 1, `${w.id} pierceMult decays, never amplifies`);
+  }
+  room.destroy();
+}
+
+// ---- penetration damage: falloff at each body's own distance, decay on top ----
+console.log('penetration damage');
+{
+  const room = new TDMRoom('p1');
+  const shooter = room.addPlayer({ name: 'S', bot: false, team: TEAM.RED })!;
+  const first = room.addPlayer({ name: 'V1', bot: false, team: TEAM.BLUE })!;
+  const second = room.addPlayer({ name: 'V2', bot: false, team: TEAM.BLUE })!;
+  shooter.protectT = 0; first.protectT = 0; second.protectT = 0;
+  shooter.moving = false; shooter.spread = 0;
+
+  const lane = openLane(room.grid, 10)!;
+  shooter.x = lane.x; shooter.y = lane.y; shooter.aim = 0;
+  // both inside the rifle's falloffStart (600), so base damage is exactly w.damage
+  first.x = lane.x + 200; first.y = lane.y;
+  second.x = lane.x + 400; second.y = lane.y;
+
+  room.fireShot(shooter, WEAPONS.rifle);
+  check(Math.abs((PLAYER_HP - first.hp) - WEAPONS.rifle.damage) < 0.01,
+    `rifle: first body takes full damage (${(PLAYER_HP - first.hp).toFixed(1)})`);
+  check(Math.abs((PLAYER_HP - second.hp) - WEAPONS.rifle.damage * WEAPONS.rifle.pierceMult) < 0.01,
+    `rifle: second body takes the decayed hit (${(PLAYER_HP - second.hp).toFixed(1)})`);
+
+  // the sniper collateral is a double one-shot — pierceMult 1.0 is what keeps it one
+  first.hp = PLAYER_HP; second.hp = PLAYER_HP;
+  first.alive = true; second.alive = true;
+  shooter.spread = 0;
+  room.fireShot(shooter, WEAPONS.sniper);
+  check(!first.alive && !second.alive, 'sniper: one round, two kills through the line');
   room.destroy();
 }
 

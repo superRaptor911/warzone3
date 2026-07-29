@@ -743,7 +743,7 @@ function loop(t: number): void {
     for (let i = 0; i < w.pellets; i++) {
       const a = aim + (Math.random() * 2 - 1) * effSpread;
       const dx = Math.cos(a), dy = Math.sin(a);
-      const { dist: d } = castPellet(grid, mePos.x, mePos.y, dx, dy, w.range, targets);
+      const { dist: d } = castPellet(grid, mePos.x, mePos.y, dx, dy, w.range, targets, w.pierce);
       fx.tracer(mePos.x, mePos.y, mePos.x + dx * d, mePos.y + dy * d, wid);
     }
     audio.shot(wid, 0.9, 0);
