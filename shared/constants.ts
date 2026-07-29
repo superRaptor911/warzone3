@@ -28,6 +28,8 @@ export const ZOMBIE_RADII: Record<ZombieTypeId, number> = {
   walker: 17,
   runner: 15,
   brute: 22,
+  spitter: 16,
+  bomber: 19,
 };
 
 export const TDM_SCORE_LIMIT = 40;
@@ -54,7 +56,27 @@ export const SHOP: Record<ShopItemId, { cost: number }> = {
   health:  { cost: 200 },   // full heal
 };
 
-export const ZOMBIE_KILL_POINTS: Record<ZombieTypeId, number> = { walker: 10, runner: 15, brute: 60 };
+export const ZOMBIE_KILL_POINTS: Record<ZombieTypeId, number> =
+  { walker: 10, runner: 15, brute: 60, spitter: 40, bomber: 25 };
+
+// ---- Outbreak: spitter acid ----
+// The glob is dodgeable on purpose (350 px/s against a 175 px/s walk), and the
+// puddle is the whole payload — a direct hit does no extra damage, it just
+// splashes the puddle at your feet, which is why sidestepping still matters.
+// The puddle burns SURVIVORS ONLY (zombies wade through their own goo), ticks
+// damage far below BOT_HEAL_AT, and must never touch movement: acid that slowed
+// you would have to live in shared/physics.ts and desync prediction.
+export const GLOB_SPEED = 350;    // px/s — slower than a walking survivor
+export const GLOB_RADIUS = 7;     // contact radius in flight, and the drawn size
+export const GLOB_RANGE = 460;    // px of flight before it bursts on its own
+export const PUDDLE_RADIUS = 55;  // px — wider than a doorway is not, so it denies one
+export const PUDDLE_LIFE_MS = 4000;
+
+// ---- Outbreak: bomber blast ----
+// Radius only; the two damage peaks live where each is constrained — the
+// survivor peak in ZOMBIE_TYPES (it must stay under BOT_HEAL_AT, see
+// server/zombie.ts) and the zombie peak in server/zombie.ts (server-only).
+export const BLAST_RADIUS = 110;
 
 // ---- Outbreak supply crates ----
 // Deliberately as strong as the shop's own ammo/health rows and rare instead of

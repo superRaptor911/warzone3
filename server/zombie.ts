@@ -1,7 +1,8 @@
 import { Room, type AddPlayerOpts, type Target } from './room.ts';
 import {
   createPlayer, refillAmmo, createZombie, setPrimary, makeAmmo, createPickup, ammoFull,
-  type Player, type Pickup, type Zombie,
+  createGlob, createPuddle, ZOMBIE_TYPES,
+  type Player, type Pickup, type Zombie, type Glob, type Puddle,
 } from './entities.ts';
 import { createBotController, nextBotName } from './bot.ts';
 import { recordWave } from './db.ts';
@@ -12,10 +13,13 @@ import {
   TEAM, TILE, PLAYER_RADIUS, PLAYER_HP, WAVE_BREAK_MS, MAX_ZOMBIES_ALIVE,
   MAX_SURVIVORS, MATCH_RESTART_MS, SHOP, ZOMBIE_KILL_POINTS, SPAWN_PROTECT_MS,
   PICKUP_RADIUS, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
+  GLOB_RADIUS, GLOB_RANGE, GLOB_SPEED, PUDDLE_LIFE_MS, PUDDLE_RADIUS, BLAST_RADIUS,
   type ShopItemId,
 } from '../shared/constants.ts';
 import { PRIMARIES, type PrimaryId } from '../shared/weapons.ts';
-import type { PickupSnap, Vec2, ZombieModeState, ZombieSnap, ZombieTypeId } from '../shared/types.ts';
+import type {
+  GlobSnap, PickupSnap, PuddleSnap, Vec2, ZombieModeState, ZombieSnap, ZombieTypeId,
+} from '../shared/types.ts';
 
 const START_POINTS = 400;
 const CHECKPOINT_EVERY = 5; // reaching wave 5/10/15… records a checkpoint
@@ -47,18 +51,45 @@ export function rollBotPrimary(): PrimaryId {
  *
  * This replaces the 200-point heal `botBuy` used to make at every wave break,
  * which was uncapped — the bonuses always covered it. Two is a cap where there
- * was none, and the threshold is derived rather than tuned: a brute's 34 is the
- * largest single hit in the game and `hpMult` scales zombie *health* only, never
- * damage, so 40 sits above it for the whole run. While a bot holds a charge no
- * single blow can kill it, and it is never left sitting under 40 with charges in
- * hand — which is why the only lethal hits it can take are ones its spent
- * charges already explain.
+ * was none, and the threshold is derived rather than tuned: the largest single
+ * survivor-facing hit in the game is 34 — a brute's claw, and the bomber's
+ * point-blank blast, which is CAPPED at brute parity for exactly this reason —
+ * and `hpMult` scales zombie *health* only, never damage, so 40 sits above it
+ * for the whole run. While a bot holds a charge no single blow can kill it, and
+ * it is never left sitting under 40 with charges in hand — which is why the
+ * only lethal hits it can take are ones its spent charges already explain.
+ * Anything new that hits a survivor must stay under this number or re-derive
+ * it; matchflow holds both damage-table entries against it.
  *
  * Server-side and never on the wire, so both live here rather than in
  * `shared/constants.ts`.
  */
 const BOT_HEALS_PER_WAVE = 2;
-const BOT_HEAL_AT = 40;
+export const BOT_HEAL_AT = 40; // exported so matchflow can hold damage tables against it
+
+// ---- spitter posture ----
+// Fragile artillery: advance to SPIT_RANGE with LOS, stand and spit, backpedal
+// (at its own slow pace) inside SPIT_BACKOFF. Frenzy overrides the posture and
+// sends it charging like everything else — the existing anti-stall machinery is
+// what closes the "last three spitters hold at range forever" standoff — and a
+// charging spitter keeps spitting, so a point-blank glob puts the puddle under
+// your feet. There is deliberately no melee attack: rushing one is answered by
+// the puddle you are now standing in, not by claws.
+const SPIT_RANGE = 400;      // holds and spits from here (chevron REACH is 500, so it never attacks unannounced)
+const SPIT_BACKOFF = 250;    // closer than this it backpedals
+const SPIT_WINDUP_MS = 700;  // committed once started; the `spit` event is the tell
+const PUDDLE_TICK_MS = 400;  // seconds between acid ticks of ZOMBIE_TYPES.spitter.damage
+
+// ---- bomber blast ----
+// The zombie-facing peak. It has no BOT_HEAL_AT ceiling (that constraint is
+// about survivor-facing hits, see ZOMBIE_TYPES), so it is sized to make
+// detonating a bomber inside the horde the reward play: at 40px it one-shots
+// everything but a brute. Falloff is linear to 30% at the blast edge.
+const BLAST_DMG_ZOMBIE = 120;
+
+function blastDamage(peak: number, d: number): number {
+  return Math.round(peak * (1 - 0.7 * Math.min(1, d / BLAST_RADIUS)));
+}
 
 // Starting cash for a run that begins at wave `cp`: base cash plus the
 // wave-clear bonuses of every skipped wave (kill income counts as "spent").
@@ -81,6 +112,15 @@ export class ZombieRoom extends Room {
   checkpoint: number;
   pickups: Map<number, Pickup>;
   pickupSpots: Vec2[];
+  globs: Map<number, Glob>;
+  puddles: Map<number, Puddle>;
+  /**
+   * Blasts waiting to resolve. A work queue rather than recursion on purpose:
+   * a blast that kills another bomber pushes a new entry and the drain loop in
+   * processBlasts picks it up, so a chain of any depth is a flat loop and the
+   * no-dead-guard in damageZombie is never re-entered mid-iteration.
+   */
+  pendingBlasts: { x: number; y: number; shooter: Player | null }[];
 
   constructor(id: string) {
     super(id, 'zombie', 'outbreak');
@@ -95,6 +135,9 @@ export class ZombieRoom extends Room {
     this.waveAge = 0;
     this.frenzyAnnounced = false;
     this.pickups = new Map();
+    this.globs = new Map();
+    this.puddles = new Map();
+    this.pendingBlasts = [];
     // Every floor tile far enough from the compound to be worth walking to,
     // resolved once: the map never changes, and picking from a list beats
     // rejection-sampling a grid that is mostly wall.
@@ -305,16 +348,24 @@ export class ZombieRoom extends Room {
   }
 
   // ---- waves ----
+  // Introductions are staggered one new thing per early wave: runners at 2,
+  // spitters at 3, brutes at 4, bombers at 5. The spitter/bomber caps are what
+  // keep the specials special — a wave that is mostly artillery has no front
+  // line to hold against it.
   compose(wave: number): ZombieTypeId[] {
     const alive = Math.max(1, this.players.size);
     const mult = 0.7 + 0.3 * alive;
     const queue: ZombieTypeId[] = [];
     const walkers = Math.round((6 + 3 * wave) * mult);
     const runners = wave >= 2 ? Math.min(14, Math.round(2 * (wave - 1) * mult)) : 0;
+    const spitters = wave >= 3 ? Math.min(5, Math.round((wave - 2) * mult)) : 0;
     const brutes = wave >= 4 ? Math.min(6, Math.floor((wave - 2) / 2)) : 0;
+    const bombers = wave >= 5 ? Math.min(4, Math.floor((wave - 3) / 2)) : 0;
     for (let i = 0; i < walkers; i++) queue.push('walker');
     for (let i = 0; i < runners; i++) queue.push('runner');
+    for (let i = 0; i < spitters; i++) queue.push('spitter');
     for (let i = 0; i < brutes; i++) queue.push('brute');
+    for (let i = 0; i < bombers; i++) queue.push('bomber');
     // shuffle
     for (let i = queue.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -381,7 +432,144 @@ export class ZombieRoom extends Room {
         shooter.points += ZOMBIE_KILL_POINTS[z.type] || 10;
       }
       this.event({ e: 'zdie', x: Math.round(z.x), y: Math.round(z.y), type: z.type });
+      // A bomber explodes wherever it dies, whoever killed it. The shooter
+      // rides into the queue so a chain's kills credit whoever set it off.
+      if (z.type === 'bomber') this.pendingBlasts.push({ x: z.x, y: z.y, shooter });
     }
+  }
+
+  /**
+   * Contact detonation: a bomber that reaches a survivor goes off instead of
+   * attacking. Nobody killed it, so nobody is credited — kill points only ever
+   * flow through damageZombie's shooter path. Drained immediately so the blast
+   * cannot leak past this tick's wave-end check into the break.
+   */
+  detonateBomber(z: Zombie): void {
+    this.zombies.delete(z.id);
+    this.event({ e: 'zdie', x: Math.round(z.x), y: Math.round(z.y), type: z.type });
+    this.pendingBlasts.push({ x: z.x, y: z.y, shooter: null });
+    this.processBlasts();
+  }
+
+  /**
+   * Resolve every queued blast, chains included.
+   *
+   * Both loops are LOS-gated per target — a doorframe is honest cover from a
+   * blast, for the squad and the horde alike, because nothing in this game
+   * damages through a wall. The zombie loop iterates a snapshot of the map:
+   * damageZombie deletes on death and has no dead guard (deliberately, see the
+   * shotgun-pellet note in room.ts), so the snapshot is what makes one blast
+   * unable to hit the same zombie twice. A bomber killed here pushes onto the
+   * queue this loop is draining — that is the whole chain mechanism.
+   *
+   * Survivor damage passes a null shooter exactly as claws do: the blast is
+   * the zombie's doing, so a player who detonates one next to a squadmate is
+   * neither credited nor blamed. Spawn protection and bot heal charges are
+   * damagePlayer's business and need nothing here.
+   */
+  processBlasts(): void {
+    while (this.pendingBlasts.length) {
+      const b = this.pendingBlasts.shift()!;
+      for (const p of this.players.values()) {
+        if (!p.alive) continue;
+        const d = dist(b, p);
+        if (d > BLAST_RADIUS || !this.grid.los(b.x, b.y, p.x, p.y)) continue;
+        this.damagePlayer(p, blastDamage(ZOMBIE_TYPES.bomber.damage, d), null, 'blast', p.x, p.y);
+      }
+      for (const z of [...this.zombies.values()]) {
+        const d = dist(b, z);
+        if (d > BLAST_RADIUS || !this.grid.los(b.x, b.y, z.x, z.y)) continue;
+        this.damageZombie(z, blastDamage(BLAST_DMG_ZOMBIE, d), b.shooter, z.x, z.y);
+      }
+    }
+  }
+
+  // ---- spitter acid ----
+  launchGlob(z: Zombie): void {
+    const g = createGlob(z.x, z.y, z.aim, GLOB_RANGE);
+    this.globs.set(g.id, g);
+  }
+
+  /**
+   * Fly the globs and burn the puddles. Runs in every room state: acid on the
+   * ground when a wave ends keeps burning into the break, and expires on its
+   * own clock.
+   *
+   * A glob stops on the first of three things — a wall (the grid raycast), a
+   * living survivor (which is why sidestepping moves the puddle), or the end
+   * of its range — and splashes its puddle there. It passes through zombies,
+   * or a spitter behind the horde could never land anything.
+   *
+   * Puddle ticks are LOS-gated like the blast: a puddle splashed against a
+   * doorway must not burn through the wall beside it. Survivors only, and the
+   * per-tick damage is deliberately far below BOT_HEAL_AT — see ZOMBIE_TYPES.
+   */
+  updateAcid(dt: number): void {
+    for (const g of this.globs.values()) {
+      const step = Math.min(GLOB_SPEED * dt, g.left);
+      const toWall = this.grid.raycast(g.x, g.y, g.dx, g.dy, step);
+      const fly = Math.min(step, toWall);
+      g.x += g.dx * fly; g.y += g.dy * fly;
+      g.left -= fly;
+      let burst = toWall < step || g.left <= 0;
+      if (!burst) {
+        for (const p of this.players.values()) {
+          if (!p.alive) continue;
+          if (dist(g, p) <= PLAYER_RADIUS + GLOB_RADIUS) { burst = true; break; }
+        }
+      }
+      if (burst) {
+        this.globs.delete(g.id);
+        const pu = createPuddle(g.x, g.y, PUDDLE_LIFE_MS / 1000);
+        this.puddles.set(pu.id, pu);
+      }
+    }
+    for (const pu of this.puddles.values()) {
+      pu.t -= dt;
+      if (pu.t <= 0) { this.puddles.delete(pu.id); continue; }
+      pu.tick -= dt;
+      if (pu.tick > 0) continue;
+      pu.tick = PUDDLE_TICK_MS / 1000;
+      for (const p of this.players.values()) {
+        if (!p.alive || dist(pu, p) > PUDDLE_RADIUS) continue;
+        if (!this.grid.los(pu.x, pu.y, p.x, p.y)) continue;
+        this.damagePlayer(p, ZOMBIE_TYPES.spitter.damage, null, 'acid', p.x, p.y);
+      }
+    }
+  }
+
+  /**
+   * Spitter combat and posture. Returns true when it also decided movement
+   * (standing in the pocket, or backpedalling); false hands the zombie to the
+   * normal chase code — too far, no LOS, or frenzied.
+   *
+   * The windup is committed once started: it launches at whatever the aim has
+   * tracked to, even if the target broke LOS or died meanwhile — a glob into a
+   * wall is the spitter's problem, and an interruptible windup would make
+   * every spit cancellable by a strafe. Frenzy (>0.5, i.e. mostly ramped)
+   * abandons the posture but never the gun: a charging spitter spits
+   * point-blank, which puts the puddle under your feet.
+   */
+  updateSpitter(z: Zombie, target: Player, td: number, dt: number): boolean {
+    const los = this.grid.los(z.x, z.y, target.x, target.y);
+    if (z.windup > 0) {
+      z.windup -= dt;
+      if (z.windup <= 0) {
+        this.launchGlob(z);
+        z.attackCd = z.attackMs / 1000;
+      }
+    } else if (z.attackCd <= 0 && los && td <= SPIT_RANGE * 1.15 && this.state !== 'over') {
+      z.windup = SPIT_WINDUP_MS / 1000;
+      this.event({ e: 'spit', id: z.id, x: Math.round(z.x), y: Math.round(z.y) });
+    }
+    if (z.frenzy > 0.5) return false;
+    if (!los || td > SPIT_RANGE) return false;
+    if (td < SPIT_BACKOFF && td > 1) {
+      // straight away from the target, at the spitter's own (slow) pace —
+      // backing off is a delaying action, not an escape
+      stepToward(this.grid, z, z.x + (z.x - target.x), z.y + (z.y - target.y), z.effSpeed, dt, z.radius);
+    }
+    return true;
   }
 
   override hitscanTargets(_p: Player): Target[] {
@@ -435,6 +623,9 @@ export class ZombieRoom extends Room {
     this.flushAndClearStats(); // banked before the counters below are zeroed
     this.zombies.clear();
     this.pickups.clear();
+    this.globs.clear();
+    this.puddles.clear();
+    this.pendingBlasts.length = 0;
     this.toSpawn = [];
     this.wave = this.checkpoint > 0 ? this.checkpoint - 1 : 0; // resume at the checkpoint wave
     for (const p of this.players.values()) {
@@ -451,8 +642,14 @@ export class ZombieRoom extends Room {
 
   override modeUpdate(dt: number): void {
     // Every state including the break: looting between waves is the point of
-    // leaving the compound while nothing is chasing you.
+    // leaving the compound while nothing is chasing you. Blasts queued by
+    // gunfire earlier in this tick resolve here, BEFORE the wave-end check in
+    // the 'wave' branch — the last bomber of a wave must explode in the wave
+    // it died in, not into the celebration. Acid keeps flying and burning in
+    // every state too; it expires on its own clock.
     this.collectPickups();
+    this.processBlasts();
+    this.updateAcid(dt);
     if (this.state === 'break') {
       this.breakT -= dt;
       if (this.breakT <= 0 && this.players.size > 0) this.startWave(this.wave + 1);
@@ -494,10 +691,16 @@ export class ZombieRoom extends Room {
       if (!target) continue;
       z.aim = Math.atan2(target.y - z.y, target.x - z.x);
       const reach = z.radius + PLAYER_RADIUS + 8;
-      if (td <= reach) {
-        if (z.attackCd <= 0 && this.state !== 'over') {
-          z.attackCd = z.attackMs / 1000;
-          this.damagePlayer(target, z.damage, null, 'claws', target.x, target.y);
+      if (z.type === 'spitter') {
+        // no melee at all — the spitter's answer to contact is the puddle
+        if (this.updateSpitter(z, target, td, dt)) continue;
+      } else if (td <= reach) {
+        if (this.state !== 'over') {
+          if (z.type === 'bomber') { this.detonateBomber(z); continue; }
+          if (z.attackCd <= 0) {
+            z.attackCd = z.attackMs / 1000;
+            this.damagePlayer(target, z.damage, null, 'claws', target.x, target.y);
+          }
         }
         continue;
       }
@@ -542,7 +745,23 @@ export class ZombieRoom extends Room {
   // ---- bot hooks ----
   override botEnemies(_p: Player): Target[] { return this.hitscanTargets(_p); }
 
-  override botThreat(p: Player): Zombie | null {
+  /**
+   * What a bot flees from. Standing in acid outranks any zombie — this is the
+   * whole of the bot step-out reflex: botThink adds a strong vector away from
+   * the returned point even mid-combat, so a bot never parks in a puddle and
+   * burns its heal charges on chip damage (the same resource-waste rule that
+   * keeps bots off supply crates). Bots still path THROUGH puddles; a tick or
+   * two in transit is honest.
+   */
+  override botThreat(p: Player): Vec2 | null {
+    for (const pu of this.puddles.values()) {
+      const d = dist(p, pu);
+      if (d > PUDDLE_RADIUS) continue;
+      // dead centre (a glob stopped on this very bot) has no away direction —
+      // flee "forward" by planting the threat behind the current aim
+      if (d < 8) return { x: p.x - Math.cos(p.aim), y: p.y - Math.sin(p.aim) };
+      return { x: pu.x, y: pu.y };
+    }
     let best: Zombie | null = null, bd = 185;
     for (const z of this.zombies.values()) {
       const d = dist(p, z);
@@ -572,6 +791,7 @@ export class ZombieRoom extends Room {
         id: z.id, x: Math.round(z.x * 10) / 10, y: Math.round(z.y * 10) / 10,
         hp: Math.round(z.hp), maxHp: z.maxHp, type: z.type, aim: Math.round(z.aim * 100) / 100,
         fr: (z.frenzy || 0) > 0.4 ? 1 : 0,
+        wu: z.windup > 0 ? 1 : 0,
       });
     }
     return out;
@@ -585,11 +805,29 @@ export class ZombieRoom extends Room {
     return out;
   }
 
+  globSnapshot(): GlobSnap[] {
+    const out: GlobSnap[] = [];
+    for (const g of this.globs.values()) {
+      out.push({ id: g.id, x: Math.round(g.x * 10) / 10, y: Math.round(g.y * 10) / 10 });
+    }
+    return out;
+  }
+
+  puddleSnapshot(): PuddleSnap[] {
+    const out: PuddleSnap[] = [];
+    for (const pu of this.puddles.values()) {
+      out.push({ id: pu.id, x: Math.round(pu.x), y: Math.round(pu.y), t: Math.round(pu.t * 10) / 10 });
+    }
+    return out;
+  }
+
   override modeSnapshot(): ZombieModeState {
     return {
       mode: 'zombie', wave: this.wave,
       zombies: this.zombieSnapshot(),
       pk: this.pickupSnapshot(),
+      globs: this.globSnapshot(),
+      puddles: this.puddleSnapshot(),
       left: this.toSpawn.length + this.zombies.size,
       breakT: this.state === 'break' ? Math.ceil(this.breakT) : 0,
       restartT: this.state === 'over' ? Math.ceil(this.restartT) : 0,

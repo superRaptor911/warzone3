@@ -122,12 +122,28 @@ export function ammoFull(p: Player): boolean {
   return true;
 }
 
+/**
+ * `damage` is each type's hit on a SURVIVOR, whatever shape the attack takes:
+ * claws for the melee three, one acid tick for the spitter, the blast's
+ * point-blank peak for the bomber. Two of those are constrained, not tuned —
+ * the spitter's tick must stay far below BOT_HEAL_AT (a bot in acid spends a
+ * heal charge per tick that leaves it under 40, so big ticks eat both charges
+ * on chip damage), and the bomber's peak must stay UNDER it, or a bot holding
+ * a charge could be killed by a single blow, which breaks the derivation
+ * BOT_HEAL_AT is (see server/zombie.ts). matchflow asserts both.
+ *
+ * `attackMs` is the cooldown of that same attack; for the spitter that is the
+ * gap between spits (the windup is separate, see SPIT_WINDUP_MS). The bomber
+ * has no repeatable attack — contact detonates it — so its entry is inert.
+ */
 export const ZOMBIE_TYPES: Record<ZombieTypeId, {
   hp: number; speed: number; damage: number; radius: number; attackMs: number; points: number;
 }> = {
   walker: { hp: 60, speed: 62, damage: 12, radius: ZOMBIE_RADII.walker, attackMs: 900, points: 10 },
   runner: { hp: 40, speed: 138, damage: 9, radius: ZOMBIE_RADII.runner, attackMs: 700, points: 15 },
   brute: { hp: 320, speed: 46, damage: 34, radius: ZOMBIE_RADII.brute, attackMs: 1300, points: 60 },
+  spitter: { hp: 50, speed: 55, damage: 8, radius: ZOMBIE_RADII.spitter, attackMs: 2800, points: 40 },
+  bomber: { hp: 70, speed: 95, damage: 34, radius: ZOMBIE_RADII.bomber, attackMs: 900, points: 25 },
 };
 
 export interface Zombie {
@@ -139,6 +155,8 @@ export interface Zombie {
   frenzy: number; effSpeed: number;
   radius: number; damage: number; attackMs: number;
   attackCd: number;
+  /** Spit windup remaining, in seconds. Only ever set on spitters. */
+  windup: number;
   path: Vec2[] | null; pathT: number; targetId: number | null;
 }
 
@@ -149,6 +167,33 @@ export function createZombie(type: ZombieTypeId, x: number, y: number): Zombie {
     hp: t.hp, maxHp: t.hp, speed: t.speed * (0.9 + Math.random() * 0.2),
     frenzy: 0, effSpeed: t.speed,
     radius: t.radius, damage: t.damage, attackMs: t.attackMs,
-    attackCd: 0, path: null, pathT: Math.random() * 0.5, targetId: null,
+    attackCd: 0, windup: 0, path: null, pathT: Math.random() * 0.5, targetId: null,
   };
+}
+
+/** An acid glob in flight. Direction is fixed at launch — it flies straight
+ *  until a wall, the first living survivor, or the end of `left`, and splashes
+ *  a puddle wherever it dies. No owner: the puddle credits nobody. */
+export interface Glob {
+  id: number;
+  x: number; y: number;
+  dx: number; dy: number; // unit direction
+  left: number;           // px of flight remaining
+}
+
+export function createGlob(x: number, y: number, angle: number, range: number): Glob {
+  return { id: newId(), x, y, dx: Math.cos(angle), dy: Math.sin(angle), left: range };
+}
+
+/** An acid puddle on the ground. `t` counts down to expiry; `tick` counts down
+ *  to the next damage pass, starting at 0 so a glob stopped by your body hurts
+ *  on the frame it lands. */
+export interface Puddle {
+  id: number;
+  x: number; y: number;
+  t: number; tick: number;
+}
+
+export function createPuddle(x: number, y: number, life: number): Puddle {
+  return { id: newId(), x, y, t: life, tick: 0 };
 }

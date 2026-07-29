@@ -5,7 +5,7 @@ import type { WeaponId } from './weapons.ts';
 export type GameMode = 'tdm' | 'zombie';
 // TDM rooms are 'live'/'over'; zombie rooms are 'break'/'wave'/'over'.
 export type RoomState = 'live' | 'over' | 'break' | 'wave';
-export type ZombieTypeId = 'walker' | 'runner' | 'brute';
+export type ZombieTypeId = 'walker' | 'runner' | 'brute' | 'spitter' | 'bomber';
 /** Outbreak floor loot. Same two effects the shop sells, for free and rarely. */
 export type PickupKind = 'ammo' | 'health';
 
@@ -74,6 +74,9 @@ export type GameEvent =
   | { e: 'hit'; x: number; y: number; sid: number; vid: number; amt: number; z: 0 | 1 }
   | { e: 'die'; id: number; x: number; y: number; z: 0 | 1 }
   | { e: 'zdie'; x: number; y: number; type: ZombieTypeId }
+  // A spitter starting its windup — the audible tell that a glob is coming.
+  // The launch itself needs no event: the glob appears in the snapshot.
+  | { e: 'spit'; id: number; x: number; y: number }
   | { e: 'kill'; k: string; v: string; w: string; kt: number; vt: number }
   | { e: 'reload'; id: number }
   | { e: 'wave'; n: number; count: number }
@@ -105,7 +108,17 @@ export interface ZombieSnap {
   id: number; x: number; y: number;
   hp: number; maxHp: number; type: ZombieTypeId; aim: number;
   fr: 0 | 1;
+  /** Spit windup in progress (spitters only) — the client's visual tell. */
+  wu: 0 | 1;
 }
+
+/** An acid glob in flight. No aim on the wire: the client draws a disc. */
+export interface GlobSnap { id: number; x: number; y: number }
+
+/** An acid puddle on the ground. `t` is seconds of life remaining, so a client
+ *  joining mid-wave can still fade it out honestly. Radius is a shared
+ *  constant (PUDDLE_RADIUS), not per-puddle data. */
+export interface PuddleSnap { id: number; x: number; y: number; t: number }
 
 // Personalized block for the receiving client (authoritative self state that
 // prediction restores before replaying unacked inputs).
@@ -148,6 +161,8 @@ export interface ZombieModeState {
   wave: number;
   zombies: ZombieSnap[];
   pk: PickupSnap[]; // supply crates on the floor
+  globs: GlobSnap[];     // spitter acid in flight
+  puddles: PuddleSnap[]; // spitter acid on the ground
   left: number;
   breakT: number;
   restartT: number;

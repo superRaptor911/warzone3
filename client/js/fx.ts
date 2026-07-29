@@ -74,6 +74,23 @@ export class Fx {
     this.corpses.push({ x, y, kind, life: 8, ttl: 8, rot: Math.random() * Math.PI * 2 });
   }
 
+  /** Bomber detonation: the biggest light pulse in the game, a two-tone spark
+   *  burst and a ring of smoke. Sized against BLAST_RADIUS by eye — the fx is
+   *  spectacle, the damage circle is the server's. */
+  boom(x: number, y: number): void {
+    this.glows.push({ x, y, life: 0.4, ttl: 0.4, radius: 480, color: '#ffb054' });
+    this.sparksAt(x, y, '#ffc964', 16, 420);
+    this.sparksAt(x, y, '#e8483f', 8, 260);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + Math.random() * 0.4;
+      const v = 120 + Math.random() * 80;
+      this.smoke.push({
+        x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+        size: 9 + Math.random() * 6, life: 1.1 + Math.random() * 0.4, ttl: 1.5,
+      });
+    }
+  }
+
   update(dt: number): void {
     this.shake = Math.max(0, this.shake - dt * 40);
     const tick = <T extends { life: number }>(arr: T[], fn?: (p: T) => void) => {

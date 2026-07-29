@@ -452,11 +452,28 @@ function handleEvent(e: GameEvent, snap: Snapshot): void {
       if (e.id === myId) fx.addShake(12);
       break;
     case 'zdie': {
-      fx.corpse(e.x, e.y, 'zombie');
-      fx.blood(e.x, e.y, 10);
-      if (renderer) renderer.stampBlood(e.x, e.y, true, true);
       const sp = audio.spatial(e.x - cam.x, e.y - cam.y);
-      audio.zdie(sp.gain, sp.pan);
+      if (e.type === 'bomber') {
+        // a bomber's death IS the explosion (server detonates on any death),
+        // so the boom keys off zdie — no separate blast event exists. No
+        // corpse: nothing that just exploded leaves one.
+        fx.boom(e.x, e.y);
+        fx.blood(e.x, e.y, 12);
+        if (renderer) renderer.stampBlood(e.x, e.y, true, true);
+        audio.boom(sp.gain, sp.pan);
+        fx.addShake(10 * sp.gain);
+      } else {
+        fx.corpse(e.x, e.y, 'zombie');
+        fx.blood(e.x, e.y, 10);
+        if (renderer) renderer.stampBlood(e.x, e.y, true, true);
+        audio.zdie(sp.gain, sp.pan);
+      }
+      break;
+    }
+    case 'spit': {
+      // the windup tell — the glob itself arrives via the snapshot
+      const sp = audio.spatial(e.x - cam.x, e.y - cam.y);
+      audio.spit(sp.gain, sp.pan);
       break;
     }
     case 'kill':
@@ -819,6 +836,9 @@ function loop(t: number): void {
     // straight off the newest snapshot, not the interpolated view: crates never
     // move, so there is nothing to interpolate and nothing to render in the past
     pickups: snap.mode === 'zombie' ? snap.pk : [],
+    globs: interp.globs,
+    // puddles are as static as crates; `?? []` tolerates an older server
+    puddles: snap.mode === 'zombie' ? snap.puddles ?? [] : [],
     fx, spread: effSpread,
   });
 

@@ -1,7 +1,7 @@
 import { INTERP_DELAY_MS, STAMINA_MAX } from '../../shared/constants.ts';
 import { stepMove, tickSprint } from '../../shared/physics.ts';
 import type { Grid } from '../../shared/maps.ts';
-import type { MoveKeys, PlayerSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
+import type { GlobSnap, MoveKeys, PlayerSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
 // Input as recorded for prediction (always fully populated, unlike the wire type).
 export interface PredInput { seq: number; dt: number; keys: MoveKeys; sprint: boolean }
@@ -86,20 +86,26 @@ export class GameState {
   }
 
   // Interpolated remote entities at render time.
-  interpolated(): { players: PlayerSnap[]; zombies: ZombieSnap[] } {
+  interpolated(): { players: PlayerSnap[]; zombies: ZombieSnap[]; globs: GlobSnap[] } {
     const rt = this.renderTime();
     const s = this.snaps;
-    if (!s.length) return { players: [], zombies: [] };
+    if (!s.length) return { players: [], zombies: [], globs: [] };
     let a = s[0], b = s[s.length - 1];
     for (let i = s.length - 1; i >= 0; i--) {
       if (s[i].now <= rt) { a = s[i]; b = s[i + 1] || s[i]; break; }
     }
     const t = b.now > a.now ? Math.min(1.3, (rt - a.now) / (b.now - a.now)) : 1;
+    // `|| []` on the acid arrays: an older server's snapshot simply lacks them,
+    // and the world should stay playable rather than die in the interpolator —
+    // the same tolerance Grid.deserialize extends to a missing `mat`.
     return {
       players: lerpEntities(a.players, b.players, t),
       zombies: lerpEntities(
         a.mode === 'zombie' ? a.zombies : [],
         b.mode === 'zombie' ? b.zombies : [], t),
+      globs: lerpPoints(
+        a.mode === 'zombie' ? a.globs || [] : [],
+        b.mode === 'zombie' ? b.globs || [] : [], t),
     };
   }
 }
@@ -109,6 +115,20 @@ function lerpAngle(a: number, b: number, t: number): number {
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   return a + d * t;
+}
+
+// Positions only — for things with no aim to wrap (acid globs).
+function lerpPoints<T extends { id: number; x: number; y: number }>(
+  listA: T[], listB: T[], t: number,
+): T[] {
+  const byId = new Map<number, T>();
+  for (const e of listA) byId.set(e.id, e);
+  const out: T[] = [];
+  for (const b of listB) {
+    const a = byId.get(b.id);
+    out.push(a ? { ...b, x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t } : { ...b });
+  }
+  return out;
 }
 
 function lerpEntities<T extends { id: number; x: number; y: number; aim: number; alive?: 0 | 1 }>(

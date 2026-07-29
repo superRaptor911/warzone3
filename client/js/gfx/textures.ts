@@ -1,13 +1,13 @@
 import { Assets, Rectangle, Sprite, Texture } from 'pixi.js';
 import type { Spritesheet } from 'pixi.js';
-import { PICKUP_RADIUS, PLAYER_RADIUS, TEAM, ZOMBIE_RADII } from '../../../shared/constants.ts';
+import { PICKUP_RADIUS, PLAYER_RADIUS, PUDDLE_RADIUS, TEAM, ZOMBIE_RADII } from '../../../shared/constants.ts';
 import { MAT, T_CRATE, T_WALL, matId, matIndoor, type Grid } from '../../../shared/maps.ts';
 import { WEAPONS, type WeaponId } from '../../../shared/weapons.ts';
 import type { PickupKind, ZombieTypeId } from '../../../shared/types.ts';
 import {
   BODY_KINDS, BODY_SS, GUN_SPEC, GUN_SS, GUN_START, PICKUP_SS, WALK_FRAMES,
-  bodyFlatKey, bodyKey, drawBody, drawBodyFlat, drawPickup, drawGun, gunKey,
-  pickupKey, type BodyKind,
+  bodyFlatKey, bodyKey, drawBody, drawBodyFlat, drawPickup, drawPuddle, drawGun,
+  gunKey, pickupKey, type BodyKind,
 } from './art.ts';
 import {
   CELL, DECOR_ART, FLOOR_ART, MASKS, OVER_ART, PROP_ART, SHEET_URL, WALL_ART,
@@ -32,17 +32,32 @@ export const TEAM_COLORS: Record<number, TeamColor> = {
 };
 // Radii come from shared/constants.ts so body frames and rings are baked at the
 // authoritative hitbox size — visuals cannot drift from collision.
+// The melee three stay in one green family; the two specials each get a hue
+// shift because their silhouette means a different verb — the spitter's acid
+// yellow-green says "ranged", the bomber's rust-orange is the universal
+// "explosive" warning. Both still sit in the zombie palette, not the team one.
 export const ZTYPE: Record<ZombieTypeId, { color: string; dark: string; r: number }> = {
   walker: { color: '#5d8a42', dark: '#3d5c2b', r: ZOMBIE_RADII.walker },
   runner: { color: '#8fb457', dark: '#5c7a36', r: ZOMBIE_RADII.runner },
   brute: { color: '#39602c', dark: '#24401b', r: ZOMBIE_RADII.brute },
+  spitter: { color: '#a9bf3f', dark: '#6f8226', r: ZOMBIE_RADII.spitter },
+  bomber: { color: '#c07a33', dark: '#7c4a1c', r: ZOMBIE_RADII.bomber },
 };
+
+// Spitter acid on screen: the glob in flight, the puddle it splashes, and the
+// flicker tint of a winding-up spitter. One family, brighter than the body —
+// acid is a hazard readout, not a costume.
+export const ACID_GLOB = 0xc4e04a;
+export const ACID_PUDDLE = 0x9fc23c;
+export const ACID_HOT = 0xe4f0a0;
 
 export const BODY_RADIUS: Record<BodyKind, number> = {
   player: PLAYER_RADIUS,
   walker: ZOMBIE_RADII.walker,
   runner: ZOMBIE_RADII.runner,
   brute: ZOMBIE_RADII.brute,
+  spitter: ZOMBIE_RADII.spitter,
+  bomber: ZOMBIE_RADII.bomber,
 };
 
 export const DISC_R = 32;        // 'disc' bake radius; scale = wantedRadius / DISC_R
@@ -170,8 +185,9 @@ let sharedTiles: Atlas | null = null;
 
 // All small shapes are baked into one 1024x1024 canvas atlas so every sprite
 // shares a single texture source (full batching) — 1024 because the body walk
-// frame sets (4 kinds x 5 frames, supersampled, now doubled by the x-ray
-// silhouettes) overflow 512; measured, the pack now reaches y=383 of 1024. Shapes
+// frame sets (6 kinds x 5 frames, supersampled, doubled by the x-ray
+// silhouettes) overflow 512; the bake throws on overflow rather than dropping
+// a frame, so growth past 1024 announces itself. Shapes
 // that vary by team or zombie type are baked white/greyscale and tinted at
 // runtime — this is also the spritesheet contract for real art (see
 // tryLoadArtAtlas).
@@ -413,9 +429,11 @@ function bakeAtlas(): Atlas {
   // a walker are both 17), which would otherwise bake the same cell twice.
   const rings: [number, number][] = [
     [PLAYER_RADIUS, 3], [PLAYER_RADIUS, 2.5], [PLAYER_RADIUS + 5, 1], // edge / my edge / prot
-    [ZTYPE.runner.r, 3], [ZTYPE.walker.r, 3], [ZTYPE.brute.r, 3],    // zombie edges
-    [ZTYPE.runner.r + 5, 2.5], [ZTYPE.walker.r + 5, 2.5], [ZTYPE.brute.r + 5, 2.5], // frenzy
   ];
+  for (const t of Object.values(ZTYPE)) {
+    rings.push([t.r, 3]);        // zombie edge
+    rings.push([t.r + 5, 2.5]);  // frenzy ring
+  }
   const ringSeen = new Set<string>();
   for (const [r, w] of rings) {
     if (ringSeen.has(ringKey(r, w))) continue;
@@ -520,6 +538,16 @@ function bakeAtlas(): Atlas {
     cell(pickupKey(kind), size, size, 0.5, 0.5, g => {
       g.translate(size / 2, size / 2);
       drawPickup(g, kind, R);
+    });
+  }
+
+  // spitter acid puddle: white splash tinted at draw time, baked 1:1 at the
+  // damage radius so scale 1 on screen IS the circle the server burns
+  {
+    const size = Math.ceil(PUDDLE_RADIUS * 2) + 2;
+    cell('puddle', size, size, 0.5, 0.5, g => {
+      g.translate(size / 2, size / 2);
+      drawPuddle(g, PUDDLE_RADIUS);
     });
   }
 

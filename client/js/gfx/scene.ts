@@ -1,11 +1,14 @@
 import { Container, Sprite, Text } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters';
-import { PLAYER_RADIUS, TEAM, TILE } from '../../../shared/constants.ts';
+import { GLOB_RADIUS, PLAYER_RADIUS, TEAM, TILE } from '../../../shared/constants.ts';
 import {
   OVER, OVER_HEIGHT, T_FLOOR, T_WALL, matId, type Grid,
 } from '../../../shared/maps.ts';
-import type { PickupSnap, PlayerSnap, ZombieSnap } from '../../../shared/types.ts';
-import { DISC_R, GfxTextures, PICKUP_COLORS, TEAM_COLORS, ZTYPE, gunKey, pickupKey, ringKey } from './textures.ts';
+import type { GlobSnap, PickupSnap, PlayerSnap, PuddleSnap, ZombieSnap } from '../../../shared/types.ts';
+import {
+  ACID_GLOB, ACID_HOT, ACID_PUDDLE, DISC_R, GfxTextures, PICKUP_COLORS, TEAM_COLORS,
+  ZTYPE, gunKey, pickupKey, ringKey,
+} from './textures.ts';
 import {
   BODY_SS, GUN_SS, HEAD, PICKUP_SS, WALK_FRAMES, bodyFlatKey, bodyKey, type BodyKind,
 } from './art.ts';
@@ -366,6 +369,7 @@ class ZombieVisual {
   private barBg: Sprite;
   private barFg: Sprite;
   private r: number;
+  private color: number | string;
   private tx: GfxTextures;
   private cycle = new WalkCycle();
   private frame: number | 'idle' | null = null;
@@ -376,6 +380,7 @@ class ZombieVisual {
     this.type = type;
     const zt = ZTYPE[type] || ZTYPE.walker;
     this.r = zt.r;
+    this.color = zt.color;
     this.fring = tx.sprite(ringKey(zt.r + 5, 2.5));
     this.fring.tint = 0xff4030;
     // claws are baked into the body frames now — they are the animated arms
@@ -415,6 +420,11 @@ class ZombieVisual {
       this.body.alpha = xray ? XRAY_ALPHA : 1;
     }
     this.body.rotation = z.aim;
+    // windup tell: a winding-up spitter strobes toward acid-bright. The flicker
+    // is the point — a static hue shift reads as a different type, a strobe
+    // reads as "about to". X-ray keeps it too: the flat bake is white, so the
+    // tint carries through and an occluded spitter telegraphs like an open one.
+    this.body.tint = z.wu && Math.sin(now / 70) > 0 ? ACID_HOT : this.color;
     this.fring.visible = !!z.fr;
     if (z.fr) this.fring.alpha = 0.45 + 0.3 * Math.sin(now / 80 + z.id);
     // eyes ride the baked head, rotated with aim
@@ -442,6 +452,8 @@ export class Scene {
   private players = new Map<number, PlayerVisual>();
   private zombies = new Map<number, ZombieVisual>();
   private crates = new Map<number, Sprite>();
+  private globs = new Map<number, Sprite>();
+  private puddles = new Map<number, Sprite>();
   private seen = new Set<number>();
   private textScale = 1;
 
@@ -561,12 +573,68 @@ export class Scene {
     }
   }
 
+  /**
+   * Acid globs in flight. Small tinted discs in `fxTop`: above the actors —
+   * a glob is in the air, and one crossing the horde must not vanish into it —
+   * but still inside `world`, under the lightmap, so darkness dims it exactly
+   * as it dims everything else.
+   */
+  syncGlobs(globs: GlobSnap[]): void {
+    this.seen.clear();
+    for (const g of globs) {
+      this.seen.add(g.id);
+      let s = this.globs.get(g.id);
+      if (!s) {
+        s = this.tx.sprite('disc');
+        s.scale.set(GLOB_RADIUS / DISC_R);
+        s.tint = ACID_GLOB;
+        this.globs.set(g.id, s);
+        this.layers.fxTop.addChild(s);
+      }
+      s.position.set(g.x, g.y);
+    }
+    for (const [id, s] of this.globs) {
+      if (!this.seen.has(id)) { s.destroy(); this.globs.delete(id); }
+    }
+  }
+
+  /**
+   * Acid puddles. In `under` — ON the ground, beneath every actor — and inside
+   * `world` so the lightmap darkens them honestly (a hazard is not a light
+   * source). Baked once at PUDDLE_RADIUS, so scale 1 is the exact circle the
+   * server burns; variety comes from a per-id rotation, and the last 0.6s of
+   * `t` fades the sprite out so expiry never pops.
+   */
+  syncPuddles(puddles: PuddleSnap[], now: number): void {
+    this.seen.clear();
+    for (const p of puddles) {
+      this.seen.add(p.id);
+      let s = this.puddles.get(p.id);
+      if (!s) {
+        s = this.tx.sprite('puddle');
+        s.tint = ACID_PUDDLE;
+        s.rotation = p.id * 2.4; // deterministic variety, stable per puddle
+        s.position.set(p.x, p.y);
+        this.puddles.set(p.id, s);
+        this.layers.under.addChild(s);
+      }
+      s.alpha = (0.66 + 0.08 * Math.sin(now / 260 + p.id)) * Math.min(1, p.t / 0.6);
+    }
+    for (const [id, s] of this.puddles) {
+      if (!this.seen.has(id)) { s.destroy(); this.puddles.delete(id); }
+    }
+  }
+
   destroy(): void {
     for (const v of this.players.values()) v.destroy();
     for (const v of this.zombies.values()) v.destroy();
     for (const s of this.crates.values()) s.destroy();
+    for (const s of this.globs.values()) s.destroy();
+    for (const s of this.puddles.values()) s.destroy();
     this.players.clear();
     this.zombies.clear();
     this.crates.clear();
+    this.globs.clear();
+    this.puddles.clear();
   }
 }

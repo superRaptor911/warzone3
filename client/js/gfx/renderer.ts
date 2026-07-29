@@ -1,7 +1,7 @@
 import { Application, Rectangle } from 'pixi.js';
 import type { Grid } from '../../../shared/maps.ts';
 import type { WeaponId } from '../../../shared/weapons.ts';
-import type { PlayerSnap, Vec2, ZombieSnap, PickupSnap } from '../../../shared/types.ts';
+import type { GlobSnap, PlayerSnap, PuddleSnap, Vec2, ZombieSnap, PickupSnap } from '../../../shared/types.ts';
 import { gunMuzzle } from './art.ts';
 import type { Fx } from '../fx.ts';
 import { zoomFor } from '../view.ts';
@@ -22,6 +22,8 @@ export interface DrawView {
   players: PlayerSnap[];
   zombies: ZombieSnap[];
   pickups: PickupSnap[]; // Outbreak supply crates (empty in TDM)
+  globs: GlobSnap[];     // spitter acid in flight (empty in TDM)
+  puddles: PuddleSnap[]; // spitter acid on the ground (empty in TDM)
   fx: Fx;
   spread: number;
 }
@@ -169,6 +171,8 @@ export class Renderer {
     this.fxs.setTextScale(textScale);
     this.scene.syncZombies(view.zombies, view.now);
     this.scene.syncPickups(view.pickups, view.now);
+    this.scene.syncGlobs(view.globs);
+    this.scene.syncPuddles(view.puddles, view.now);
     this.scene.syncPlayers(view.players, view.myId, view.me, view.now);
     this.fxs.sync(view.fx);
     this.lights.update(view, vw, vh, ox, oy, z);

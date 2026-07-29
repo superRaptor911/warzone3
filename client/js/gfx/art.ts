@@ -19,8 +19,8 @@ import type { PickupKind } from '../../../shared/types.ts';
 type Ctx = CanvasRenderingContext2D;
 const TAU = Math.PI * 2;
 
-export type BodyKind = 'player' | 'walker' | 'runner' | 'brute';
-export const BODY_KINDS: BodyKind[] = ['player', 'walker', 'runner', 'brute'];
+export type BodyKind = 'player' | 'walker' | 'runner' | 'brute' | 'spitter' | 'bomber';
+export const BODY_KINDS: BodyKind[] = ['player', 'walker', 'runner', 'brute', 'spitter', 'bomber'];
 
 // 4-frame walk cycle: stride = sin(phase), weight sway = cos(phase), so the two
 // mid-stride frames still differ by which side the body is leaning onto.
@@ -93,6 +93,8 @@ export const HEAD: Record<BodyKind, { x: number; y: number; r: number }> = {
   walker: { x: 0.26, y: 0.10, r: 0.30 },
   runner: { x: 0.46, y: -0.04, r: 0.28 },
   brute: { x: 0.26, y: 0, r: 0.24 },
+  spitter: { x: 0.42, y: -0.20, r: 0.22 },
+  bomber: { x: 0.30, y: 0, r: 0.22 },
 };
 
 // ---- greyscale drawing helpers (v is luminance 0..1) ----
@@ -254,6 +256,88 @@ function drawBrute(g: Ctx, R: number, ph: number | null): void {
   dot(g, 0.26 * R, sway * 0.5, 0.24 * R, 0.88);
 }
 
+// ---- spitter: a narrow frame dragged behind a distended throat sac. The sac
+// is the identity — it reads at a glance as "that one shoots" — and it sits
+// forward so the aim direction says where the glob will come from. ----
+function drawSpitter(g: Ctx, R: number, ph: number | null): void {
+  const t = ph == null ? null : ph * TAU;
+  const stride = t == null ? 0 : Math.sin(t);
+  const sway = (t == null ? 0 : Math.cos(t)) * 0.07 * R;
+
+  // shuffling feet on a narrow track
+  for (const side of [-1, 1]) {
+    const bx = -0.30 * R + side * stride * 0.26 * R;
+    ell(g, bx, side * 0.32 * R + sway, 0.22 * R, 0.15 * R, side * 0.2, 0.44);
+  }
+  // narrow torso, hunched back against the weight of the sac
+  ell(g, -0.16 * R, sway, 0.56 * R, 0.44 * R, -0.18, 0.60);
+  // thin arms swept down and back — the whole posture hangs off the throat
+  for (const side of [-1, 1]) {
+    const hy = side * 0.52 * R - stride * side * 0.10 * R;
+    limb(g, 0, side * 0.34 * R + sway, -0.42 * R, hy, 0.13 * R, 0.50);
+    dot(g, -0.46 * R, hy, 0.10 * R, 0.38);
+  }
+  // bony shoulders
+  for (const side of [-1, 1]) dot(g, -0.02 * R, side * 0.32 * R + sway * 0.8, 0.18 * R, 0.70);
+  // the sac: brightest mass, slung forward under the jaw, throbbing as it walks
+  const bulge = (t == null ? 0 : Math.abs(Math.sin(t))) * 0.03 * R;
+  dot(g, 0.36 * R, 0.06 * R + sway * 0.5, 0.38 * R + bulge, 0.84);
+  ell(g, 0.30 * R, 0.18 * R + sway * 0.5, 0.16 * R, 0.11 * R, 0.4, 0.66); // sag crease
+  // small head craned over the sac
+  dot(g, 0.42 * R, -0.20 * R + sway * 0.5, 0.22 * R, 0.90);
+}
+
+// ---- bomber: one swollen mass on stubby legs, the payload straining at its
+// seams. Wide like a brute but round — the outline alone says "ordnance". ----
+function drawBomber(g: Ctx, R: number, ph: number | null): void {
+  const t = ph == null ? null : ph * TAU;
+  const stride = t == null ? 0 : Math.sin(t);
+  const sway = (t == null ? 0 : Math.cos(t)) * 0.05 * R;
+
+  // stubby feet, barely clearing the belly
+  for (const side of [-1, 1]) {
+    const bx = -0.34 * R + side * stride * 0.18 * R;
+    ell(g, bx, side * 0.42 * R + sway, 0.22 * R, 0.15 * R, 0, 0.42);
+  }
+  // the mass itself
+  ell(g, -0.04 * R, sway, 0.66 * R, 0.62 * R, 0, 0.62);
+  // swollen belly, brightest and forward: the part you are supposed to shoot
+  dot(g, 0.14 * R, sway, 0.46 * R, 0.82);
+  // straining seams across it
+  ell(g, 0.10 * R, -0.16 * R + sway, 0.30 * R, 0.05 * R, 0.35, 0.52);
+  ell(g, 0.12 * R, 0.14 * R + sway, 0.28 * R, 0.05 * R, -0.3, 0.52);
+  // stubby arms, pushed wide by the girth
+  for (const side of [-1, 1]) {
+    const hy = side * 0.40 * R + stride * side * 0.05 * R;
+    limb(g, 0.02 * R, side * 0.52 * R + sway, 0.40 * R, hy, 0.18 * R, 0.55);
+    dot(g, 0.44 * R, hy, 0.12 * R, 0.40);
+  }
+  // small head sunk into the mass
+  dot(g, 0.30 * R, sway * 0.5, 0.22 * R, 0.88);
+}
+
+// ---- spitter acid puddle ----
+// Baked white and tinted at draw time like the bodies; overlapping translucent
+// blobs stack alpha toward the middle, so the pool reads dense at the centre
+// and ragged at the rim without a gradient. Deterministic — no randomness, so
+// the bake is stable and the variety on screen comes from per-id rotation in
+// gfx/scene.ts. The splash reaches close to `r` because the damage circle IS
+// r (PUDDLE_RADIUS): acid that looks smaller than it burns would be unfair.
+export function drawPuddle(g: Ctx, r: number): void {
+  const blob = (x: number, y: number, br: number, a: number): void => {
+    g.fillStyle = `rgba(255,255,255,${a})`;
+    g.beginPath(); g.ellipse(x, y, br, br * 0.82, x + y, 0, TAU); g.fill();
+  };
+  blob(0, 0, r * 0.88, 0.42);
+  blob(r * 0.38, r * 0.30, r * 0.44, 0.40);
+  blob(-r * 0.46, r * 0.14, r * 0.40, 0.40);
+  blob(r * 0.06, -r * 0.50, r * 0.38, 0.40);
+  blob(-r * 0.18, -r * 0.24, r * 0.52, 0.42);
+  blob(r * 0.16, r * 0.12, r * 0.40, 0.42);
+  // hot core
+  blob(-r * 0.04, -r * 0.02, r * 0.34, 0.5);
+}
+
 /** Keyline width as a fraction of R. ~1.5px at the baked radius of a player. */
 const BODY_OL = 0.045;
 
@@ -279,6 +363,8 @@ export function drawBody(g: Ctx, kind: BodyKind, R: number, ph: number | null): 
     if (kind === 'player') drawSoldier(g, Rs, ph);
     else if (kind === 'walker') drawWalker(g, Rs, ph);
     else if (kind === 'runner') drawRunner(g, Rs, ph);
+    else if (kind === 'spitter') drawSpitter(g, Rs, ph);
+    else if (kind === 'bomber') drawBomber(g, Rs, ph);
     else drawBrute(g, Rs, ph);
   };
   keyW = ol;

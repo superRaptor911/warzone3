@@ -7,10 +7,11 @@
 process.env.WZ3_DB = ':memory:';
 
 import { TDMRoom } from '../server/tdm.ts';
-import { ZombieRoom, checkpointPoints } from '../server/zombie.ts';
+import { BOT_HEAL_AT, ZombieRoom, checkpointPoints } from '../server/zombie.ts';
 import {
   TEAM, TDM_SCORE_LIMIT, STAMINA_MAX, STAMINA_MIN_TO_SPRINT, TILE, PLAYER_RADIUS,
   TICK_RATE, PLAYER_SPEED, PLAYER_HP, PICKUPS_PER_WAVE, MAX_PICKUPS, PICKUP_SPAWN_CLEAR,
+  GLOB_RADIUS, GLOB_RANGE, PUDDLE_LIFE_MS, PUDDLE_RADIUS,
 } from '../shared/constants.ts';
 import {
   Grid, MAT, OVER, OVER_HEIGHT, T_CRATE, T_FLOOR, T_WALL, buildMap, matId,
@@ -20,12 +21,12 @@ import {
   isOverId, isPropMat, isWallMat, overVariant, overVariants,
 } from '../client/js/gfx/tileset.ts';
 import { AMBIENT, ambientFor, indoorRects, indoorTiles } from '../client/js/gfx/ambient.ts';
-import { createPickup } from '../server/entities.ts';
+import { ZOMBIE_TYPES, createGlob, createPickup, createPuddle, createZombie } from '../server/entities.ts';
 import {
   addStats, claimProfile, closeDb, leaderboard, nameError, nameKey, nameTaken,
   profileById, recordWave, suggestName,
 } from '../server/db.ts';
-import { tickSprint } from '../shared/physics.ts';
+import { dist, tickSprint } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { VIEW_TARGET_W, ZOOM_MAX, ZOOM_MIN, bloomFor, resolutionFor, zoomFor } from '../client/js/view.ts';
 import {
@@ -558,6 +559,254 @@ console.log('zombie frenzy');
   room.startWave(2);
   room.waveAge = 80;
   check(room.frenzyActive(), 'dragging a wave past 75s also triggers frenzy');
+  room.destroy();
+}
+
+// ---- Zombie: spitter (acid artillery) ----
+// The first ranged zombie. What has to hold: the staggered wave introductions,
+// the hold-at-range posture (with frenzy overriding it), the committed windup
+// with its wire tell, and the acid rules — the glob stops on walls and
+// survivors but flies through zombies, and the puddle burns survivors only.
+console.log('zombie spitter');
+{
+  const room = new ZombieRoom('sp1');
+  const h = room.addPlayer({ name: 'H', bot: false })!;
+  h.protectT = 0;
+  const dt = 1 / TICK_RATE;
+
+  // composition: one new thing per early wave, capped so specials stay special
+  check(!room.compose(2).includes('spitter'), 'no spitters before wave 3');
+  check(room.compose(3).includes('spitter'), 'spitters arrive at wave 3');
+  check(!room.compose(4).includes('bomber'), 'no bombers before wave 5');
+  check(room.compose(5).includes('bomber'), 'bombers arrive at wave 5');
+  const deep = room.compose(30);
+  check(deep.filter(t => t === 'spitter').length <= 5
+    && deep.filter(t => t === 'bomber').length <= 4,
+    `deep waves cap the specials (${deep.filter(t => t === 'spitter').length} spitters, `
+    + `${deep.filter(t => t === 'bomber').length} bombers)`);
+
+  // posture: inside [SPIT_BACKOFF, SPIT_RANGE] with LOS it stands and spits
+  const lane = openLane(room.grid, 10)!;
+  room.state = 'wave';
+  h.x = lane.x + 350; h.y = lane.y;
+  const z = createZombie('spitter', lane.x, lane.y);
+  room.zombies.set(z.id, z);
+  room.updateZombies(dt);
+  check(z.windup > 0, 'a spitter in the pocket starts its windup');
+  check(room.events.some(e => e.e === 'spit' && e.id === z.id), 'and announces the windup on the wire');
+  check(room.zombieSnapshot().find(s => s.id === z.id)!.wu === 1, 'the snapshot carries the tell');
+  const zx = z.x, zy = z.y;
+  for (let i = 0; i < Math.ceil(0.75 / dt); i++) { room.updateZombies(dt); room.updateAcid(dt); }
+  check(Math.hypot(z.x - zx, z.y - zy) < 1, 'it holds its ground while in the pocket');
+  check(room.globs.size === 1, 'the windup launches exactly one glob');
+  check(z.attackCd > 0, 'and starts the spit cooldown');
+
+  // flight: the glob stops on the survivor and splashes the puddle at their feet
+  let guard = 0;
+  while (room.globs.size && guard++ < 200) room.updateAcid(dt);
+  check(room.puddles.size === 1, 'the glob splashes a puddle where it stops');
+  const pu1 = [...room.puddles.values()][0];
+  check(dist(pu1, h) < PLAYER_RADIUS + GLOB_RADIUS + 12,
+    `at the feet of the survivor that stopped it (${dist(pu1, h).toFixed(0)}px away)`);
+  check(h.hp < PLAYER_HP, `and the acid burns them (hp ${h.hp})`);
+  check(h.hp > PLAYER_HP - 3 * ZOMBIE_TYPES.spitter.damage, 'in ticks, not a lump');
+
+  // survivors only: a zombie wades through the same puddle unharmed
+  const wader = createZombie('walker', pu1.x, pu1.y);
+  room.zombies.set(wader.id, wader);
+  h.x = lane.x; h.y = lane.y - 0; h.x = lane.x; // step the human out of the acid
+  room.updateAcid(0.5);
+  check(wader.hp === wader.maxHp, 'zombies are immune to acid');
+  room.zombies.delete(wader.id);
+
+  // a glob flies THROUGH zombies — a spitter behind the horde still lands shots
+  room.puddles.clear();
+  const blocker = createZombie('brute', lane.x + 150, lane.y);
+  room.zombies.set(blocker.id, blocker);
+  h.x = lane.x + 350; h.y = lane.y;
+  const g2 = createGlob(lane.x, lane.y, 0, GLOB_RANGE);
+  room.globs.set(g2.id, g2);
+  guard = 0;
+  while (room.globs.size && guard++ < 200) room.updateAcid(dt);
+  const pu2 = [...room.puddles.values()][0];
+  check(dist(pu2, blocker) > 100 && dist(pu2, h) < PLAYER_RADIUS + GLOB_RADIUS + 12,
+    'a glob passes through a zombie and bursts on the survivor beyond it');
+  room.zombies.delete(blocker.id);
+
+  // ...but never through a wall: fired into one, it bursts against it
+  room.puddles.clear();
+  h.x = lane.x; h.y = lane.y; h.hp = PLAYER_HP;
+  const g3 = createGlob(lane.x, lane.y, Math.PI, GLOB_RANGE); // straight at the lane's left wall
+  room.globs.set(g3.id, g3);
+  guard = 0;
+  while (room.globs.size && guard++ < 200) room.updateAcid(dt);
+  const pu3 = [...room.puddles.values()][0];
+  check(dist(pu3, { x: lane.x, y: lane.y }) < GLOB_RANGE - TILE,
+    `a wall stops the glob short of its range (${dist(pu3, { x: lane.x, y: lane.y }).toFixed(0)}px)`);
+
+  // puddles expire on their own clock
+  room.puddles.clear();
+  const pu4 = createPuddle(lane.x + 240, lane.y, PUDDLE_LIFE_MS / 1000);
+  room.puddles.set(pu4.id, pu4);
+  for (let i = 0; i < Math.ceil((PUDDLE_LIFE_MS / 1000 + 0.3) / dt); i++) room.updateAcid(dt);
+  check(room.puddles.size === 0, 'a puddle expires after its lifetime');
+
+  // backpedal: closed on, it gives ground while staying in the fight
+  h.x = lane.x + 300 + 150; h.y = lane.y;
+  z.x = lane.x + 300; z.y = lane.y; z.windup = 0;
+  const d0 = dist(z, h);
+  for (let i = 0; i < 30; i++) room.updateZombies(dt);
+  check(dist(z, h) > d0 + 10, `closed inside the backoff it backpedals (${d0.toFixed(0)} -> ${dist(z, h).toFixed(0)}px)`);
+
+  // frenzy overrides the posture: the stand-off closer works on spitters too
+  z.x = lane.x; z.y = lane.y; z.windup = 0; z.frenzy = 1;
+  h.x = lane.x + 350;
+  const d1 = dist(z, h);
+  for (let i = 0; i < 10; i++) room.updateZombies(dt);
+  check(dist(z, h) < d1 - 10, `frenzied, it charges instead of holding (${d1.toFixed(0)} -> ${dist(z, h).toFixed(0)}px)`);
+
+  // the acid tick is chip damage by construction — far below the bot heal line
+  check(ZOMBIE_TYPES.spitter.damage * 2 < BOT_HEAL_AT,
+    'an acid tick is small against BOT_HEAL_AT, so transit never eats a bot heal');
+  room.destroy();
+}
+
+// ---- Zombie: bomber (walking ordnance) ----
+// Any death detonates it; the blast is LOS-gated both ways, chains resolve
+// through the work queue with kill credit riding along, and the survivor-facing
+// peak stays under BOT_HEAL_AT so the heal-charge derivation survives verbatim.
+console.log('zombie bomber');
+{
+  const room = new ZombieRoom('bm1');
+  const shooter = room.addPlayer({ name: 'S', bot: false })!;
+  shooter.protectT = 0;
+  const lane = openLane(room.grid, 10)!;
+  room.state = 'wave';
+  const dt = 1 / TICK_RATE;
+
+  // the damage-table invariant, stated once and held forever: while a bot has a
+  // charge it is never below BOT_HEAL_AT, so no survivor-facing hit may reach it
+  check(ZOMBIE_TYPES.bomber.damage < BOT_HEAL_AT,
+    `blast peak on survivors (${ZOMBIE_TYPES.bomber.damage}) stays under BOT_HEAL_AT (${BOT_HEAL_AT})`);
+
+  // shot at range: it detonates where it died, chains into its neighbour, and
+  // every chained kill credits the shooter
+  const a = createZombie('bomber', lane.x + 100, lane.y);
+  const b = createZombie('bomber', lane.x + 140, lane.y);
+  const w = createZombie('walker', lane.x + 180, lane.y);
+  room.zombies.set(a.id, a); room.zombies.set(b.id, b); room.zombies.set(w.id, w);
+  shooter.x = lane.x + 420; shooter.y = lane.y; // outside both blasts
+  const hp0 = shooter.hp;
+  room.damageZombie(a, 9999, shooter, a.x, a.y);
+  check(room.pendingBlasts.length === 1, "a bomber's death queues its blast");
+  room.processBlasts();
+  check(room.zombies.size === 0, 'the chain clears all three: blast kills the bomber, whose blast kills the walker');
+  check(shooter.kills === 3, `every chained kill credits the shooter (${shooter.kills})`);
+  check(shooter.hp === hp0, 'a shooter outside the radius is untouched');
+  check(room.events.filter(e => e.e === 'zdie' && e.type === 'bomber').length === 2, 'both bombers explode');
+  check(room.pendingBlasts.length === 0, 'and the queue drains completely');
+
+  // a wall is honest cover from a blast — no damage in this game goes through one
+  let blocked: { from: { x: number; y: number }; to: { x: number; y: number } } | null = null;
+  for (let ty = 1; ty < room.grid.h - 1 && !blocked; ty++) {
+    for (let tx = 2; tx < room.grid.w - 2; tx++) {
+      if (room.grid.get(tx, ty) === T_FLOOR
+        || room.grid.get(tx - 1, ty) !== T_FLOOR || room.grid.get(tx + 1, ty) !== T_FLOOR) continue;
+      blocked = {
+        from: { x: (tx - 1 + 0.5) * TILE, y: (ty + 0.5) * TILE },
+        to: { x: (tx + 1 + 0.5) * TILE, y: (ty + 0.5) * TILE },
+      };
+      break;
+    }
+  }
+  check(blocked !== null, 'found a wall with floor either side to detonate against');
+  if (blocked) {
+    shooter.x = blocked.to.x; shooter.y = blocked.to.y; shooter.hp = PLAYER_HP;
+    const c = createZombie('bomber', blocked.from.x, blocked.from.y);
+    room.zombies.set(c.id, c);
+    room.damageZombie(c, 9999, null, c.x, c.y);
+    room.processBlasts();
+    check(shooter.hp === PLAYER_HP,
+      `a wall blocks the blast entirely (${Math.round(dist(blocked.from, blocked.to))}px apart)`);
+    // the same separation in the open IS hit, so the check above tests LOS
+    shooter.x = lane.x + 2 * TILE; shooter.y = lane.y;
+    const c2 = createZombie('bomber', lane.x, lane.y);
+    room.zombies.set(c2.id, c2);
+    room.damageZombie(c2, 9999, null, c2.x, c2.y);
+    room.processBlasts();
+    check(shooter.hp < PLAYER_HP, `the identical distance in the open is hit (hp ${shooter.hp})`);
+  }
+
+  // a bot at its minimum standing hp survives a point-blank blast on a charge —
+  // this is the BOT_HEAL_AT derivation exercised end to end
+  const bot = room.addPlayer({ name: 'B', bot: true })!;
+  bot.protectT = 0;
+  bot.x = lane.x + 200; bot.y = lane.y;
+  bot.hp = BOT_HEAL_AT; bot.botHeals = 1;
+  const pb = createZombie('bomber', bot.x + 1, bot.y);
+  room.zombies.set(pb.id, pb);
+  room.damageZombie(pb, 9999, null, pb.x, pb.y);
+  room.processBlasts();
+  check(bot.alive && bot.hp === PLAYER_HP && bot.botHeals === 0,
+    'a bot holding a charge survives a point-blank blast and heals');
+
+  // contact: it detonates itself instead of attacking — no kill, no credit
+  const k1 = shooter.kills;
+  shooter.hp = PLAYER_HP;
+  const sui = createZombie('bomber', shooter.x + 30, shooter.y);
+  room.zombies.set(sui.id, sui);
+  room.updateZombies(dt);
+  check(!room.zombies.has(sui.id), 'a bomber reaching a survivor detonates itself');
+  check(shooter.hp < PLAYER_HP, `and the blast lands (hp ${shooter.hp})`);
+  check(shooter.kills === k1, 'a suicide credits nobody');
+
+  // a wipe clears the acid and the queue with everything else
+  const zz = createZombie('spitter', lane.x, lane.y);
+  room.zombies.set(zz.id, zz);
+  room.globs.set(1, createGlob(lane.x, lane.y, 0, GLOB_RANGE));
+  const rp = createPuddle(lane.x, lane.y, 4);
+  room.puddles.set(rp.id, rp);
+  room.pendingBlasts.push({ x: 0, y: 0, shooter: null });
+  room.resetGame();
+  check(room.globs.size === 0 && room.puddles.size === 0 && room.pendingBlasts.length === 0,
+    'a reset clears globs, puddles and queued blasts');
+  room.destroy();
+}
+
+// ---- Zombie: bots step out of acid ----
+// The reflex is one rule in botThreat: standing in a puddle outranks any
+// zombie, and botThink's flee vector does the rest. What must hold is the
+// priority and that a dead-centre stand (a glob stopped on the bot itself)
+// still yields a direction.
+console.log('zombie bot acid reflex');
+{
+  const room = new ZombieRoom('ac1');
+  const bot = room.addPlayer({ name: 'B', bot: true })!;
+  const lane = openLane(room.grid, 10)!;
+  bot.x = lane.x + 100; bot.y = lane.y;
+
+  check(room.botThreat(bot) === null, 'clear ground, no zombies: nothing to flee');
+
+  const zn = createZombie('walker', bot.x + 120, bot.y);
+  room.zombies.set(zn.id, zn);
+  const t0 = room.botThreat(bot);
+  check(t0 !== null && t0.x === zn.x, 'a close zombie is the threat on clean ground');
+
+  const pu = createPuddle(bot.x + 20, bot.y, 4);
+  room.puddles.set(pu.id, pu);
+  const t1 = room.botThreat(bot)!;
+  check(t1.x === pu.x && t1.y === pu.y, 'standing in acid, the puddle outranks the zombie');
+
+  // dead centre: no away direction exists, so the reflex plants one
+  pu.x = bot.x; pu.y = bot.y;
+  const t2 = room.botThreat(bot)!;
+  check(t2 !== null && dist(t2, bot) < 3 && (t2.x !== bot.x || t2.y !== bot.y),
+    'a puddle dead-centre still yields a flee direction');
+
+  // out of the acid, the zombie threat resumes
+  pu.x = bot.x + PUDDLE_RADIUS + 40; pu.y = bot.y;
+  const t3 = room.botThreat(bot);
+  check(t3 !== null && t3.x === zn.x, 'stepping clear hands the threat back to the zombies');
   room.destroy();
 }
 

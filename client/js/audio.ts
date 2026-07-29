@@ -137,6 +137,53 @@ export class Audio {
     osc.start(t); osc.stop(t + 0.5);
   }
 
+  /** Spitter windup: a wet rising gurgle — the audible "get out of the lane".
+   *  Runs ~0.55s against the 0.7s windup, so it ends just before the glob. */
+  spit(gain: number, pan: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(240, t + 0.5);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 500;
+    const g = this.node(gain * 0.35, pan);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain * 0.35, t + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    osc.connect(lp); lp.connect(g);
+    osc.start(t); osc.stop(t + 0.6);
+  }
+
+  /** Bomber detonation: deeper and longer than any gun — a low drop plus a
+   *  noise tail whose filter closes as it fades. */
+  boom(gain: number, pan: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(28, t + 0.45);
+    const og = this.node(gain * 0.9, pan);
+    og.gain.setValueAtTime(gain * 0.9, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    osc.connect(og);
+    osc.start(t); osc.stop(t + 0.52);
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf(0.5);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1400, t);
+    lp.frequency.exponentialRampToValueAtTime(200, t + 0.5);
+    const g = this.node(gain * 0.7, pan);
+    g.gain.setValueAtTime(gain * 0.7, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    src.connect(lp); lp.connect(g);
+    src.start(t);
+  }
+
   zdie(gain: number, pan: number): void {
     const ctx = this.ctx;
     if (!ctx) return;

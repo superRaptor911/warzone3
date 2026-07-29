@@ -344,8 +344,9 @@ console.log('art invariants (measured on a real canvas)');
   const bodies = await page.evaluate<Record<string, number>>(`(async () => {
     const art = await import('/client/js/gfx/art.ts');
     const C = await import('/shared/constants.ts');
-    const radii = { player: C.PLAYER_RADIUS, walker: C.ZOMBIE_RADII.walker,
-                    runner: C.ZOMBIE_RADII.runner, brute: C.ZOMBIE_RADII.brute };
+    // spread, not hand-listed: a new zombie kind must be measured the moment
+    // it exists, or this test silently runs it at R = NaN
+    const radii = { player: C.PLAYER_RADIUS, ...C.ZOMBIE_RADII };
     const out = {};
     for (const kind of art.BODY_KINDS) {
       const R = radii[kind] * art.BODY_SS;
@@ -392,8 +393,7 @@ console.log('art invariants (measured on a real canvas)');
   const flats = await page.evaluate<{ shaded: number; kinds: Record<string, [number, number]> }>(`(async () => {
     const art = await import('/client/js/gfx/art.ts');
     const C = await import('/shared/constants.ts');
-    const radii = { player: C.PLAYER_RADIUS, walker: C.ZOMBIE_RADII.walker,
-                    runner: C.ZOMBIE_RADII.runner, brute: C.ZOMBIE_RADII.brute };
+    const radii = { player: C.PLAYER_RADIUS, ...C.ZOMBIE_RADII };
     let shaded = 0;
     const kinds = {};
     for (const kind of art.BODY_KINDS) {
