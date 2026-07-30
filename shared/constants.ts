@@ -45,12 +45,13 @@ export const MAX_ZOMBIES_ALIVE = 26;
 export const TEAM = { RED: 0, BLUE: 1, SURVIVOR: 2 };
 
 // Zombie-mode shop (cost in points)
-export type ShopItemId = 'smg' | 'shotgun' | 'rifle' | 'sniper' | 'ammo' | 'health';
+export type ShopItemId = 'smg' | 'shotgun' | 'rifle' | 'lmg' | 'sniper' | 'ammo' | 'health';
 
 export const SHOP: Record<ShopItemId, { cost: number }> = {
   smg:     { cost: 300 },
   shotgun: { cost: 500 },
   rifle:   { cost: 800 },
+  lmg:     { cost: 1000 },
   sniper:  { cost: 1200 },
   ammo:    { cost: 150 },   // refill all ammo
   health:  { cost: 200 },   // full heal

@@ -7,6 +7,16 @@ import type { MoveKeys, Vec2 } from './types.ts';
 
 export interface SprintState { stamina?: number; sprinting?: boolean }
 
+// Gun-in-hand walk speed. `moveMult` lives in the weapon table (shared), and
+// both sims must compute speed through this one function — the server's
+// applyInput and the client's prediction replay — or the two drift and
+// players rubber-band. The client reads the weapon off the snapshot's own `w`
+// field, so no new state crosses the wire; a swap mis-predicts speed for one
+// RTT, under 2px of correction.
+export function moveSpeed(w: { moveMult: number }): number {
+  return PLAYER_SPEED * w.moveMult;
+}
+
 // Advance the sprint/stamina state of an entity. Returns whether it is
 // sprinting this step. Deterministic — runs identically in server sim and
 // client prediction, so it must be fed the raw "wants to sprint" input.

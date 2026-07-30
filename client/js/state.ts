@@ -1,5 +1,6 @@
 import { INTERP_DELAY_MS, STAMINA_MAX } from '../../shared/constants.ts';
-import { stepMove, tickSprint } from '../../shared/physics.ts';
+import { moveSpeed, stepMove, tickSprint } from '../../shared/physics.ts';
+import { WEAPONS } from '../../shared/weapons.ts';
 import type { Grid } from '../../shared/maps.ts';
 import type { GlobSnap, MoveKeys, PlayerSnap, Snapshot, Vec2, ZombieSnap } from '../../shared/types.ts';
 
@@ -9,11 +10,14 @@ export interface PredInput { seq: number; dt: number; keys: MoveKeys; sprint: bo
 interface PredState { x: number; y: number; stamina: number; sprinting: boolean }
 
 // One deterministic prediction step, mirroring server applyInput movement.
-function simStep(grid: Grid, ent: PredState, input: PredInput): void {
+// `speed` is the held weapon's moveSpeed — taken from the snapshot's `w`, so
+// a just-sent swap predicts the old gun's speed for one RTT (sub-2px, decays
+// through the normal correction).
+function simStep(grid: Grid, ent: PredState, input: PredInput, speed: number): void {
   const k = input.keys;
   const wantsMove = !!(k.w || k.a || k.s || k.d);
   const sprinting = tickSprint(ent, input.sprint && wantsMove, input.dt);
-  stepMove(grid, ent, k, sprinting, input.dt);
+  stepMove(grid, ent, k, sprinting, input.dt, speed);
 }
 
 // Holds snapshot buffer, server-clock sync, entity interpolation, and
@@ -53,7 +57,8 @@ export class GameState {
         sprinting: !!(s.self && s.self.spg),
       };
       if (this.self.alive) {
-        for (const i of this.pending) simStep(this.grid, p, i);
+        const spd = moveSpeed(WEAPONS[this.self.w]);
+        for (const i of this.pending) simStep(this.grid, p, i, spd);
       }
       this.pred = p;
       if (prevRender && this.self.alive) {
@@ -69,7 +74,7 @@ export class GameState {
     if (!this.pred || !this.self || !this.self.alive) return;
     this.pending.push(input);
     if (this.pending.length > 120) this.pending.shift();
-    simStep(this.grid, this.pred, input);
+    simStep(this.grid, this.pred, input, moveSpeed(WEAPONS[this.self.w]));
   }
 
   // Smoothed render position for local player.

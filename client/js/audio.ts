@@ -4,6 +4,7 @@ const SHOT_CFG: Record<string, ShotCfg> = {
   pistol: { nDur: 0.09, nGain: 0.5, f0: 220, fDur: 0.07, thump: 0.25 },
   smg: { nDur: 0.06, nGain: 0.38, f0: 260, fDur: 0.05, thump: 0.18 },
   rifle: { nDur: 0.1, nGain: 0.55, f0: 190, fDur: 0.09, thump: 0.3 },
+  lmg: { nDur: 0.09, nGain: 0.5, f0: 165, fDur: 0.08, thump: 0.34 },
   shotgun: { nDur: 0.18, nGain: 0.8, f0: 130, fDur: 0.16, thump: 0.5 },
   sniper: { nDur: 0.25, nGain: 0.9, f0: 100, fDur: 0.22, thump: 0.6 },
 };

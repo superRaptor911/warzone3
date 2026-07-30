@@ -19,6 +19,7 @@ const BUY_ITEMS: { key: ShopItemId; label: string }[] = [
   { key: 'smg', label: 'Viper SMG' },
   { key: 'shotgun', label: 'M870 Shotgun' },
   { key: 'rifle', label: 'AR-7 Rifle' },
+  { key: 'lmg', label: 'M249 LMG' },
   { key: 'sniper', label: 'LR-50 Marksman' },
   { key: 'ammo', label: 'Ammo Refill' },
   { key: 'health', label: 'Med Kit' },

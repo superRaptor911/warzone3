@@ -874,7 +874,7 @@ function updateCenterMsg(snap: Snapshot, self: SelfSnap, meSnap: PlayerSnap): vo
         `<button data-loadout="${wn}"${self.slots[1] === wn ? ' class="sel"' : ''}>` +
         `${weaponIconHtml(wn)}${esc(WEAPONS[wn].name)}</button>`).join('');
       hud.centerMsg(`<div class="big" style="color:#e8a53f">RESPAWN IN ${Math.ceil(self.respawnT)}</div>` +
-        `<div class="sub kbd-only">switch loadout: 1 SMG · 2 AR-7 · 3 M870 · 4 LR-50</div>` +
+        `<div class="sub kbd-only">switch loadout: 1 SMG · 2 AR-7 · 3 M870 · 4 LR-50 · 5 M249</div>` +
         `<div class="cm-btns">${btns}</div>`);
     } else {
       const fighting = snap.players.filter(p => p.alive && p.id !== myId).length;

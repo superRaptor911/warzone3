@@ -1,5 +1,5 @@
 import { buildMap, type Grid } from '../shared/maps.ts';
-import { stepMove, tickSprint, dist } from '../shared/physics.ts';
+import { stepMove, tickSprint, dist, moveSpeed } from '../shared/physics.ts';
 import { castPellet } from '../shared/hitscan.ts';
 import { WEAPONS, fireIntervalMs, damageAt, type Weapon, type WeaponId } from '../shared/weapons.ts';
 import {
@@ -281,7 +281,7 @@ export class Room {
     const keys = m.keys || {};
     const wantsMove = !!(keys.w || keys.a || keys.s || keys.d);
     const sprinting = tickSprint(p, !!m.sprint && wantsMove, dt);
-    p.moving = stepMove(this.grid, p, keys, sprinting, dt);
+    p.moving = stepMove(this.grid, p, keys, sprinting, dt, moveSpeed(weaponOf(p)));
     if (m.fire) this.tryFire(p, !p.firePrev);
     p.firePrev = !!m.fire;
   }

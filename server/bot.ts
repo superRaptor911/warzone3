@@ -16,7 +16,7 @@ export function nextBotName(): string {
 // preferred engagement distance band per weapon
 const BANDS: Record<WeaponId, [number, number]> = {
   pistol: [150, 380], smg: [130, 330], rifle: [220, 500],
-  shotgun: [70, 190], sniper: [380, 750],
+  shotgun: [70, 190], sniper: [380, 750], lmg: [250, 550],
 };
 
 export interface BotController {

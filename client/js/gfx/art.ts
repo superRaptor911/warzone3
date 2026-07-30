@@ -438,6 +438,9 @@ const GUN_PAL: Record<WeaponId, GunPal> = {
   shotgun: { frame: '#4a525d', barrel: '#3a4149', furniture: '#8b5e34', accent: '#f0c65e', glass: '#f0c65e', shadow: '#221c16', edge: '#b07f4a', outline: '#0d1014' },
   // olive drab marksman rifle with a big glass optic
   sniper: { frame: '#4d5560', barrel: '#333940', furniture: '#6e7a54', accent: '#3f4650', glass: '#8fdcff', shadow: '#1c2026', edge: '#93a06e', outline: '#0d1014' },
+  // forest-green support gun — the only green-FRAMED weapon (the sniper's olive
+  // is furniture on grey), so the box-fed silhouette reads green at a glance
+  lmg: { frame: '#4a564c', barrel: '#32393c', furniture: '#527d4a', accent: '#93b578', glass: '#ff6a5e', shadow: '#1e231f', edge: '#a4b790', outline: '#0d1014' },
 };
 
 // Guns bake supersampled and scale down at draw time (same reason as bodies):
@@ -456,6 +459,7 @@ export const GUN_SPEC: Record<WeaponId, { len: number; h: number }> = {
   rifle: { len: 30, h: 10 },
   shotgun: { len: 30, h: 11.5 },
   sniper: { len: 36, h: 10.5 },
+  lmg: { len: 34, h: 12 },
 };
 
 // Lifts a hex colour toward white — the HUD sits on near-black, where the
@@ -556,6 +560,31 @@ function gunParts(id: WeaponId): Part[] {
       pp(10.5, cy, 1.2, 'glass'),
       bx(10.5, cy + 2.3, 4.0, 1.8, 'frame'),      // magazine
       bx(3.4, cy - 2.3, 14, 0.8, 'edge'),
+    ];
+  }
+  if (id === 'lmg') {
+    return [
+      bx(0.8, cy - 3.4, 7.5, 6.8, 'furniture'),   // green polymer stock
+      bx(1.6, cy - 2.4, 2.2, 4.8, 'shadow'),      // buttplate
+      bx(7.5, cy - 3.4, 12.5, 6.8, 'frame'),      // boxy receiver
+      bx(7.5, cy - 4.0, 11, 0.9, 'accent'),       // feed-tray cover rail
+      bx(9.0, cy - 4.6, 2.8, 1.4, 'accent'),      // rear sight block
+      bx(12.5, cy - 4.6, 2.0, 1.2, 'accent'),     // carry handle stub
+      bx(16.5, cy - 1.2, 2.4, 1.4, 'shadow'),     // ejection port
+      bx(10.5, cy + 2.6, 7.0, 3.0, 'furniture'),  // underslung box magazine — the identity cue
+      bx(10.5, cy + 2.6, 7.0, 0.8, 'shadow'),     // box lid seam
+      bx(13.6, cy + 3.4, 0.8, 2.2, 'shadow'),     // belt window
+      bx(20, cy - 3.0, 6.5, 6.0, 'furniture'),    // green handguard / heat shield
+      bx(21, cy - 0.9, 1.1, 1.4, 'shadow'),       // shield vents
+      bx(23, cy - 0.9, 1.1, 1.4, 'shadow'),
+      bx(25, cy - 0.9, 1.1, 1.4, 'shadow'),
+      bx(26.5, cy - 1.5, 6.0, 3.0, 'barrel'),     // thick barrel
+      bx(26.5, cy + 1.4, 4.5, 1.3, 'frame'),      // gas tube under barrel
+      bx(28.5, cy - 3.9, 1.1, 2.6, 'frame'),      // folded bipod legs
+      bx(28.5, cy + 1.5, 1.1, 2.6, 'frame'),
+      bx(31.8, cy - 2.1, 2.2, 4.2, 'accent'),     // muzzle booster
+      bx(32.4, cy - 2.1, 0.8, 4.2, 'shadow'),     // booster port
+      bx(7.5, cy - 3.4, 13, 0.8, 'edge'),
     ];
   }
   if (id === 'shotgun') {

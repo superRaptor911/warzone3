@@ -773,6 +773,28 @@ console.log('zombie bomber');
   room.destroy();
 }
 
+// ---- Weapons: per-gun move speed stays inside the frenzy envelope ----
+// `moveMult` (shared/weapons.ts) is bounded by zombie.ts's frenzy speeds, and
+// both sides are read live so retuning either trips this. Ceiling: the fastest
+// gun-out walk must stay under the slowest frenzied chaser that is supposed to
+// catch kiters (walkers/spitters/bombers at 195) or waves with those stragglers
+// stop ending. Floor: the slowest walk must stay above a frenzied brute, which
+// is designed to be escapable at a walk.
+console.log('weapon move-speed frenzy envelope');
+{
+  const room = new ZombieRoom('spd1');
+  const frWalker = room.frenzySpeed(createZombie('walker', 0, 0));
+  const frBrute = room.frenzySpeed(createZombie('brute', 0, 0));
+  const mults = Object.values(WEAPONS).map(w => w.moveMult);
+  const fastest = PLAYER_SPEED * Math.max(...mults);
+  const slowest = PLAYER_SPEED * Math.min(...mults);
+  check(fastest < frWalker,
+    `fastest gun-out walk (${fastest.toFixed(2)}) stays under a frenzied walker (${frWalker}), margin ${(frWalker - fastest).toFixed(1)}px/s`);
+  check(slowest > frBrute,
+    `slowest gun-out walk (${slowest.toFixed(2)}) stays above a frenzied brute (${frBrute}), margin ${(slowest - frBrute).toFixed(1)}px/s`);
+  room.destroy();
+}
+
 // ---- Zombie: bots step out of acid ----
 // The reflex is one rule in botThreat: standing in a puddle outranks any
 // zombie, and botThink's flee vector does the rest. What must hold is the
